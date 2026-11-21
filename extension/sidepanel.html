@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Waypoint</title>
+  </head>
+  <body>
+    <header>
+      <h1>Waypoint</h1>
+      <span id="nano" class="badge">checking Nano…</span>
+    </header>
+
+    <form id="ask-form">
+      <textarea id="q" rows="3" placeholder="What do you want to do? e.g. Enforce App Check for Firebase AI Logic"></textarea>
+      <div class="row">
+        <button type="submit" id="ask">Guide me</button>
+        <label class="toggle"><input type="checkbox" id="force-cloud" /> Cloud only</label>
+      </div>
+    </form>
+
+    <p id="status" class="status">Open a Firebase console tab, then ask.</p>
+
+    <section id="route" hidden>
+      <h2>Route</h2>
+      <ol id="steps"></ol>
+      <button type="button" id="replan" class="secondary" hidden>Re-plan from this page</button>
+    </section>
+
+    <section>
+      <h2>Escalation receipt</h2>
+      <p class="hint">Every AI call, where it ran, and exactly what left your device.</p>
+      <ul id="log"></ul>
+    </section>
+
+    <script type="module" src="./src/sidepanel.js"></script>
+  </body>
+</html>

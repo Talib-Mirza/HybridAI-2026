@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.firebase/
+*.log
+
+# Local secrets (App Check debug token lives here)
+.env.local
+.env.*.local
+
+.DS_Store
+
+# Built extension (contains the App Check debug token from .env.local)
+dist-extension/

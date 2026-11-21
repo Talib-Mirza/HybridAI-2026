@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "Waypoint",
+  "version": "0.1.0",
+  "description": "An in-page guide for dense developer consoles. Gemini Nano finds the control on your page; cloud Gemini plans multi-page routes.",
+  "minimum_chrome_version": "139",
+  "permissions": ["sidePanel", "scripting", "tabs", "storage"],
+  "host_permissions": ["https://console.firebase.google.com/*"],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_title": "Open Waypoint" },
+  "side_panel": { "default_path": "sidepanel.html" },
+  "content_scripts": [
+    {
+      "matches": ["https://console.firebase.google.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>HybridAI 2026</title>
+  </head>
+  <body>
+    <main>
+      <h1>HybridAI 2026</h1>
+      <p class="sub">Firebase AI Logic hybrid inference: Gemini Nano on-device, cloud Gemini as fallback.</p>
+
+      <section class="card">
+        <div class="row">
+          <span>On-device model:</span>
+          <strong id="nano-status">checking…</strong>
+          <button id="download" type="button" hidden>Download Gemini Nano</button>
+        </div>
+      </section>
+
+      <form id="prompt-form" class="card">
+        <label for="prompt">Prompt</label>
+        <textarea id="prompt" rows="4">Write a haiku about running AI on-device.</textarea>
+        <button type="submit">Generate</button>
+      </form>
+
+      <section class="card">
+        <div class="row">
+          <span>Answered by:</span>
+          <strong id="source">—</strong>
+        </div>
+        <pre id="output"></pre>
+      </section>
+    </main>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>
