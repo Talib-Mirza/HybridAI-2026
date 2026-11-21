@@ -1,5 +1,5 @@
 import "./sidepanel.css";
-import { pickElement, planRoute, hasKeywordHit, exactMatch, alreadyHere, looksDone, specificToGoal, namesNavTarget } from "./pipeline.js";
+import { pickElement, planRoute, hasKeywordHit, exactMatch, alreadyHere, looksDone, specificToGoal, namesNavTarget, navTarget } from "./pipeline.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -13,6 +13,8 @@ const state = {
   run: 0, // bumps on every step search so only the newest one may show a bubble
   replans: 0, // automatic cloud re-plans used for the current goal
   revealing: false, // the bubble is on a menu toggle; clicking it re-searches instead of advancing
+  paused: false, // the user paused the guide (×); nothing shows until they resume
+  single: null, // single-page answer: { label, bubble } so it can be found again / resumed
 };
 
 let stepTimer = 0;
@@ -48,15 +50,80 @@ async function ensureFresh(tabId) {
   await chrome.scripting.executeScript({ target: { tabId }, files: ["content.js"] });
 }
 
-async function consoleTab() {
+// ---------- Site access ----------
+// Firebase console is built in; any other site needs the user's OK (one site, or all sites). The
+// permission request has to run straight from the click, so the current site is kept up to date here.
+
+const ALL_SITES = ["https://*/*", "http://*/*"];
+const site = { tabId: null, host: "", pattern: "", allowed: false, web: false };
+
+async function refreshSite() {
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-  if (!tab?.url?.startsWith("https://console.firebase.google.com/")) return null;
-  return tab.id;
+  let u = null;
+  try { u = tab?.url ? new URL(tab.url) : null; } catch {}
+  site.web = !!u && /^https?:$/.test(u.protocol);
+  site.tabId = tab?.id ?? null;
+  site.host = site.web ? u.host : "";
+  site.pattern = site.web ? `${u.protocol}//${u.host}/*` : "";
+  site.allowed = site.web && (await chrome.permissions.contains({ origins: [site.pattern] }));
+  const all = await chrome.permissions.contains({ origins: ALL_SITES });
+  const builtIn = site.host === "console.firebase.google.com";
+  $("all-sites").checked = all;
+  $("site-text").textContent = !site.web
+    ? "Open a web page to use Waypoint."
+    : site.allowed
+      ? `Waypoint is on for ${site.host}.`
+      : `Waypoint is off for ${site.host}.`;
+  $("site-enable").hidden = !site.web || site.allowed;
+  $("site-disable").hidden = !site.allowed || all || builtIn;
+}
+
+$("site-enable").addEventListener("click", () => {
+  const { pattern, tabId } = site;
+  // Must be the first call in the click handler (user gesture).
+  chrome.permissions.request({ origins: [pattern] }).then(async (ok) => {
+    if (ok && tabId != null) await chrome.scripting.executeScript({ target: { tabId }, files: ["content.js"] }).catch(() => {});
+    refreshSite();
+  });
+});
+$("site-disable").addEventListener("click", () => {
+  chrome.permissions.remove({ origins: [site.pattern] }).then(refreshSite);
+});
+$("all-sites").addEventListener("change", (e) => {
+  const want = e.target.checked;
+  (want ? chrome.permissions.request({ origins: ALL_SITES }) : chrome.permissions.remove({ origins: ALL_SITES }))
+    .then(() => refreshSite());
+});
+chrome.tabs.onActivated.addListener(refreshSite);
+chrome.tabs.onUpdated.addListener((_id, info) => info.url && refreshSite());
+chrome.windows.onFocusChanged.addListener(refreshSite);
+chrome.permissions.onAdded.addListener(refreshSite);
+chrome.permissions.onRemoved.addListener(refreshSite);
+refreshSite();
+
+/** The active tab, if Waypoint may run there. */
+async function pageTab() {
+  await refreshSite();
+  return site.allowed ? site.tabId : null;
 }
 
 function status(text) {
   $("status").textContent = text;
   if (state.tabId) send(state.tabId, { type: "status", text }).catch(() => {});
+}
+
+/**
+ * The in-page chip. "busy" appears only if work takes over ~0.3 s, so fast steps never flash it; it
+ * replaces showing a guess on screen while Waypoint is still deciding.
+ */
+function chip(mode, text = "") {
+  if (state.tabId) send(state.tabId, { type: "pill", mode, text }).catch(() => {});
+}
+const busy = (text) => chip("busy", text);
+
+function setPaused(on) {
+  state.paused = on;
+  $("paused").hidden = !on;
 }
 
 // ---------- Escalation receipt ----------
@@ -122,6 +189,7 @@ function placement(outline, id, opensMenu = false) {
 }
 
 async function show(where, bubble) {
+  if (state.paused) return;
   state.revealing = where.reveal;
   await send(state.tabId, {
     type: "show",
@@ -180,7 +248,8 @@ async function reportDone(item, where) {
 
 async function ask(question, tabId) {
   const gen = ++state.gen;
-  Object.assign(state, { tabId, mode: "idle", goal: question, steps: [], i: 0, replans: 0, revealing: false });
+  Object.assign(state, { tabId, mode: "idle", goal: question, steps: [], i: 0, replans: 0, revealing: false, single: null });
+  setPaused(false);
   renderSteps();
   $("replan").hidden = true;
   await ensureFresh(tabId);
@@ -188,7 +257,24 @@ async function ask(question, tabId) {
 
   try {
     status("Reading this page…");
-    if (await sweepDone(await send(tabId, { type: "outline" }))) return;
+    busy("Reading this page…");
+    const first = await send(tabId, { type: "outline" });
+    if (await sweepDone(first)) return;
+    // "Open X" with a control labelled exactly X on screen: that's the answer, no AI needed.
+    const nav = navTarget(question);
+    const navHit = nav && exactMatch(nav, first.items);
+    if (navHit) {
+      const where = placement(first, navHit.id);
+      if ((await send(tabId, { type: "check", id: where.showId }))?.ok && gen === state.gen) {
+        log({ kind: "info", title: `Exact match: "${navHit.label}"`, detail: "Found by label, no AI call needed." });
+        state.mode = "single";
+        const bubble = { step: "Here", text: where.reveal ? "" : `Use "${navHit.label}".`, src: "Exact label match · no AI call" };
+        state.single = { label: navHit.label, bubble };
+        await show(where, bubble);
+        status(where.reveal ? "It's inside a collapsed menu on this page." : "Found it on this page.");
+        return;
+      }
+    }
     const res = await locate(question, gen);
     if (!res) return;
     const { pick } = res;
@@ -206,26 +292,18 @@ async function ask(question, tabId) {
     if (res.found && (completes || res.where.reveal)) {
       // The goal is on this page (possibly inside a collapsed menu): no route needed.
       state.mode = "single";
-      await show(res.where, {
-        step: "Here",
-        text: res.where.reveal ? "" : `Use "${label}".`,
-        src: SOURCE_LABEL[pick.source],
-      });
+      const bubble = { step: "Here", text: res.where.reveal ? "" : `Use "${label}".`, src: SOURCE_LABEL[pick.source] };
+      state.single = { label, bubble };
+      await show(res.where, bubble);
       status(res.where.reveal ? "It's inside a collapsed menu on this page." : "Found it on this page.");
       return;
     }
-    if (res.found && !pick.completesGoal) {
-      // Nano knows the first move: show it instantly while the cloud plans the rest of the route.
-      await show(res.where, {
-        step: "Step 1",
-        text: `Start with "${label}".`,
-        why: "Planning the rest of the route…",
-        src: SOURCE_LABEL[pick.source],
-      });
-    }
+    // Nothing is highlighted until the route is known: showing Nano's guess first and then the plan's
+    // first step looked like Waypoint changing its mind. The chip says it's working instead.
     await escalate(question, res.outline, gen, { pick });
   } catch (e) {
     console.error(e);
+    chip(null);
     status(`Error: ${e?.message || e}`);
   }
 }
@@ -244,6 +322,7 @@ async function escalate(goal, outline, gen, { pick = null, failed = null, unfini
         : "Gemini Nano found the first step; the goal is on another page, so the cloud plans the route.",
   });
   status(failed ? "Re-planning from this page with cloud Gemini…" : "Planning the route with cloud Gemini…");
+  busy(failed || unfinished ? "Re-planning from here…" : "Planning your route…");
   const plan = await planRoute({ goal, outline, done, failed, unfinished });
   if (gen !== state.gen) return;
   log({
@@ -261,7 +340,7 @@ async function escalate(goal, outline, gen, { pick = null, failed = null, unfini
 }
 
 async function runStep(gen, attempt, run) {
-  const stale = () => gen !== state.gen || run !== state.run || state.mode !== "route";
+  const stale = () => gen !== state.gen || run !== state.run || state.mode !== "route" || state.paused;
   if (stale()) return;
   if (state.i >= state.steps.length) {
     // A short plan can end before the goal: if the last step didn't name anything specific to the goal
@@ -277,6 +356,7 @@ async function runStep(gen, attempt, run) {
     }
     status("Route complete. Review the final screen before confirming anything.");
     await send(state.tabId, { type: "hide" });
+    chip("done", "You're there");
     state.mode = "idle";
     renderSteps();
     $("route").hidden = false;
@@ -312,8 +392,25 @@ async function runStep(gen, attempt, run) {
       state.i = j;
       renderSteps();
       if (await reportDone(hit, where)) return;
+      state.steps[j].shown = hit.label;
       await show(where, { step: of(), text: state.steps[j].instruction, src: "Exact label match · no AI call" });
       status(`${of()}: ${where.reveal ? where.revealText : state.steps[j].instruction}`);
+      return;
+    }
+
+    // Backtrack, no AI: a menu or drawer an earlier step opened has closed again (the user clicked away),
+    // so the current step's control is gone. Point back at that toggle instead of re-planning.
+    for (let j = state.i - 1; j >= Math.max(0, state.i - 3); j--) {
+      const prev = state.steps[j];
+      const hit = exactMatch(prev.shown || prev.target, outline.items);
+      if (!hit || !hit.state.includes("collapsed")) continue;
+      const where = placement(outline, hit.id);
+      if (!(await send(state.tabId, { type: "check", id: where.showId }))?.ok || stale()) continue;
+      log({ kind: "info", title: `Back to step ${j + 1}`, detail: `"${hit.label}" closed again; reopen it to continue.` });
+      state.i = j;
+      renderSteps();
+      await show(where, { step: of(), text: `Reopen "${hit.label}" to continue.`, why: state.steps[state.i + 1]?.instruction || "", src: "Exact label match · no AI call" });
+      status(`${of()}: reopen "${hit.label}" to continue.`);
       return;
     }
 
@@ -326,6 +423,7 @@ async function runStep(gen, attempt, run) {
       if (!step || !hasKeywordHit(step.target, outline.items)) continue;
       tried = true;
       status(`Step ${j + 1}: looking for "${step.target}"…`);
+      busy(`Looking for "${step.target}"…`);
       const res = await locate(`"${step.target}" (${step.instruction}; ${step.where})`, gen, run);
       if (!res || stale()) return;
       const pickedItem = res.outline.items.find((it) => it.id === res.pick.elementId);
@@ -339,6 +437,7 @@ async function runStep(gen, attempt, run) {
       if (res.found) {
         state.i = j;
         renderSteps();
+        step.shown = pickedItem?.label;
         await show(res.where, { step: of(), text: step.instruction, src: SOURCE_LABEL[res.pick.source] });
         status(`${of()}: ${res.where.reveal ? res.where.revealText : step.instruction}`);
         return;
@@ -348,20 +447,72 @@ async function runStep(gen, attempt, run) {
     // Give a loading page ~2 s; give Nano up to 4 tries when the target's words are on screen.
     if (attempt < 2 || (tried && attempt < 4)) {
       status("Waiting for the page to load…");
+      busy("Waiting for the page…");
       stepTimer = setTimeout(() => runStep(gen, attempt + 1, run), 900);
     } else if (state.replans < MAX_AUTO_REPLANS) {
       // Rung 3, cloud: the plan was wrong for this page; re-plan from what's actually on screen.
       state.replans += 1;
       await escalate(state.goal, outline, gen, { failed: state.steps[state.i].target });
     } else {
+      chip(null);
       status(`Couldn't find "${state.steps[state.i].target}" here. Navigate there, or re-plan from this page.`);
       $("replan").hidden = false;
     }
   } catch (e) {
     console.error(e);
+    chip(null);
     status(`Error: ${e?.message || e}`);
   }
 }
+
+// ---------- Pause / resume ----------
+// × on the bubble pauses instead of ending: the route and progress are kept, and Resume (in the page
+// chip or here) picks up from whatever page the user is on now.
+
+function pause() {
+  if (state.mode === "idle") return;
+  clearTimeout(stepTimer);
+  state.run++;
+  setPaused(true);
+  status("Guide paused. Resume when you're ready.");
+}
+
+async function resume() {
+  if (!state.paused) return;
+  setPaused(false);
+  chip(null);
+  if (state.mode === "route") {
+    busy("Picking up where you left off…");
+    scheduleStep(0);
+  } else if (state.mode === "single") relocateSingle();
+}
+
+function endGuide() {
+  state.gen++;
+  clearTimeout(stepTimer);
+  Object.assign(state, { mode: "idle", single: null });
+  setPaused(false);
+  send(state.tabId, { type: "hide" }).catch(() => {});
+  chip(null);
+  renderSteps();
+  status("Guide ended.");
+}
+
+/** Single-page answer: find the same control again by its label (no AI), or ask again if it's gone. */
+async function relocateSingle() {
+  const gen = state.gen;
+  const outline = await send(state.tabId, { type: "outline" });
+  if (gen !== state.gen || state.paused || !state.single) return;
+  const hit = exactMatch(state.single.label, outline.items);
+  if (hit) {
+    const where = placement(outline, hit.id);
+    if ((await send(state.tabId, { type: "check", id: where.showId }))?.ok) return show(where, state.single.bubble);
+  }
+  ask(state.goal, state.tabId);
+}
+
+$("resume").addEventListener("click", resume);
+$("end").addEventListener("click", endGuide);
 
 // ---------- Events ----------
 
@@ -369,9 +520,11 @@ $("ask-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const q = $("q").value.trim();
   if (!q) return;
-  const tabId = await consoleTab();
+  const tabId = await pageTab();
   if (!tabId) {
-    $("status").textContent = "Switch to a Firebase console tab first.";
+    $("status").textContent = site.web
+      ? `Waypoint is off for ${site.host}. Turn it on above, then ask again.`
+      : "Open the page you need help with first.";
     return;
   }
   ask(q, tabId);
@@ -408,17 +561,27 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
       else if (state.mode === "single") setTimeout(() => ask(state.goal, state.tabId), 600);
     } else if (state.mode === "route") {
       state.i += 1;
+      busy("Finding the next step…");
       scheduleStep(800);
     } else if (state.mode === "single") {
       state.mode = "idle";
+      chip("done", "Done");
       status("Done.");
     }
-  } else if (msg.type === "url-changed" && state.mode === "route") {
+  } else if (msg.type === "url-changed" && state.mode === "route" && !state.paused) {
     scheduleStep(900);
-  } else if (msg.type === "overlay-closed") {
-    state.gen++;
-    state.mode = "idle";
-    status("Guidance closed.");
+  } else if (msg.type === "target-lost" && !state.paused) {
+    // The highlighted control vanished (re-render, closed drawer, navigation): find it again.
+    if (state.mode === "route") {
+      busy("Finding the step again…");
+      scheduleStep(400);
+    } else if (state.mode === "single") relocateSingle();
+  } else if (msg.type === "overlay-paused") {
+    pause();
+  } else if (msg.type === "resume") {
+    resume();
+  } else if (msg.type === "end") {
+    endGuide();
   }
 });
 
@@ -466,7 +629,8 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
   setInterval(async () => {
     const now = await read();
     if (!now || now === first) return;
-    const tabs = await chrome.tabs.query({ url: "https://console.firebase.google.com/*" });
+    // Every web tab; injection only succeeds where Waypoint is allowed.
+    const tabs = await chrome.tabs.query({ url: ["https://*/*", "http://*/*"] });
     for (const t of tabs) {
       await chrome.scripting.executeScript({ target: { tabId: t.id }, files: ["content.js"] }).catch(() => {});
     }

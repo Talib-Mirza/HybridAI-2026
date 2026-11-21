@@ -1,4 +1,4 @@
-// Waypoint content script (runs on console.firebase.google.com).
+// Waypoint content script: runs on the Firebase console (built in) and on any site the user allows.
 // 1. Builds a compact, redacted outline of the page's visible controls (no raw HTML, no values).
 // 2. Draws the guidance overlay: a highlight ring + bubble anchored to one element.
 // 3. Reports navigation and target clicks back to the side panel.
@@ -51,17 +51,24 @@
     return clean(parts.join(" "));
   }
 
+  // The current project/workspace id, from the common URL shapes: /project/<id> (Firebase) and
+  // ?project=<id> (Google Cloud and many others). It and its display variants are redacted everywhere.
   function projectId() {
-    const m = location.pathname.match(/\/project\/([^/]+)/);
-    return m ? m[1] : null;
+    const m =
+      location.pathname.match(/\/projects?\/([^/]+)/) ||
+      location.search.match(/[?&](?:project|projectId|org|organization|workspace)=([^&#]+)/i);
+    return m ? decodeURIComponent(m[1]) : null;
   }
+  const escapeRe = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
   // Redaction: everything that leaves the device passes through this. Values are never read at all.
   function redact(s) {
     if (!s) return s;
     const pid = projectId();
-    if (pid) s = s.split(pid).join("[project]");
+    if (pid && pid.length > 2) s = s.replace(new RegExp(escapeRe(pid), "gi"), "[project]");
     return s
+      // A person's name shown next to their email ("Jane Doe (jane@x.com)", account menus).
+      .replace(/[\p{Lu}][\p{L}'’-]+(?:\s+[\p{Lu}][\p{L}'’-]+){0,3}\s*\(\s*[\w.+-]+@[\w-]+\.[\w.-]+\s*\)/gu, "[name] ([email])")
       .replace(/[\w.+-]+@[\w-]+\.[\w.-]+/g, "[email]")
       .replace(/AIza[0-9A-Za-z_-]{20,}/g, "[api-key]")
       .replace(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi, "[uuid]")
@@ -125,7 +132,15 @@
     return tag;
   }
 
+  // Keyboard-shortcut hints in labels ("Navigation menu (.)", "Chat (Option G)") aren't part of the name.
+  const stripShortcut = (t) =>
+    t.replace(/\s*\((?:[^\w\s()]{1,3}|(?:ctrl|cmd|command|option|alt|shift|⌘|⌥)[^()]{0,20}|[a-z]\s*then\s*[a-z])\)\s*$/i, "").trim() || t;
+
   function labelOf(el) {
+    return stripShortcut(rawLabelOf(el));
+  }
+
+  function rawLabelOf(el) {
     if (el.matches(ROW)) {
       const first = el.querySelector(CELL);
       return first ? textOf(first).slice(0, 60) : "";
@@ -340,27 +355,52 @@
   const shadow = host.attachShadow({ mode: "open" });
   shadow.innerHTML = `
     <style>
-      .ring{position:fixed;border:2px solid #4f7cff;border-radius:8px;box-shadow:0 0 0 9999px rgba(10,16,34,.28),0 0 0 4px rgba(79,124,255,.35);transition:all .18s ease;display:none}
-      .bubble{position:fixed;max-width:320px;background:#111a33;color:#f4f6ff;font:13px/1.45 system-ui,-apple-system,sans-serif;padding:12px 14px 10px;border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.35);pointer-events:auto;display:none}
-      .bubble .step{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:#9fb3ff;margin-bottom:4px}
+      :host{all:initial}
+      .ring{position:fixed;border:2px solid #4f7cff;border-radius:8px;box-shadow:0 0 0 9999px rgba(10,16,34,.28),0 0 0 4px rgba(79,124,255,.35);transition:left .18s ease,top .18s ease,width .18s ease,height .18s ease,opacity .15s;display:none}
+      .bubble{position:fixed;max-width:320px;background:#111a33;color:#f4f6ff;font:13px/1.45 system-ui,-apple-system,sans-serif;padding:12px 14px 10px;border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.35);pointer-events:auto;display:none;animation:in .16s ease-out}
+      .bubble .step{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:#9fb3ff;margin-bottom:4px;padding-right:18px}
       .bubble .why{color:#c9d2f0;font-size:12px;margin-top:6px}
+      .bubble .why:empty,.bubble .text:empty{display:none}
       .bubble .src{color:#7f8bb0;font-size:10.5px;margin-top:8px}
-      .bubble .x{position:absolute;top:6px;right:8px;cursor:pointer;color:#9fb3ff;font-size:14px;background:none;border:0}
+      .bubble .scroll{display:none;margin-top:8px;align-items:center;gap:8px;color:#ffd78a;font-size:12px}
+      .bubble.away .scroll{display:flex}
+      .x{position:absolute;top:6px;right:8px;cursor:pointer;color:#9fb3ff;font-size:14px;background:none;border:0;padding:2px 4px;border-radius:4px}
+      .x:hover,.x:focus-visible{background:rgba(159,179,255,.15);outline:none}
+      .btn{font:600 12px system-ui,-apple-system,sans-serif;border:0;border-radius:6px;padding:4px 10px;cursor:pointer;background:#4f7cff;color:#fff}
+      .btn.ghost{background:transparent;color:#9fb3ff;padding:4px 6px}
+      .btn:focus-visible{outline:2px solid #9fb3ff;outline-offset:2px}
       .arrow{position:absolute;width:12px;height:12px;background:#111a33;transform:rotate(45deg)}
+      .pill{position:fixed;bottom:16px;right:16px;display:none;align-items:center;gap:8px;background:#111a33;color:#f4f6ff;font:12.5px/1.3 system-ui,-apple-system,sans-serif;padding:8px 10px 8px 12px;border-radius:999px;box-shadow:0 6px 20px rgba(0,0,0,.3);pointer-events:auto}
+      .pill.busy{animation:in .18s ease-out .3s both}
+      .pill .dot{width:8px;height:8px;border-radius:50%;background:#4f7cff;animation:pulse 1s ease-in-out infinite}
+      .pill:not(.busy) .dot{display:none}
+      .pill .acts{display:none;gap:2px}
+      .pill.paused .acts{display:flex}
+      .pill.done .dot{display:block;background:#3ccf8e;animation:none}
+      @keyframes in{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
+      @keyframes pulse{0%,100%{opacity:.35}50%{opacity:1}}
+      @media (prefers-reduced-motion:reduce){.ring,.bubble,.pill,.pill .dot{transition:none;animation:none}}
     </style>
     <div class="ring"></div>
-    <div class="bubble"><button class="x" title="Close">×</button><div class="step"></div><div class="text"></div><div class="why"></div><div class="src"></div><div class="arrow"></div></div>`;
+    <div class="bubble" role="dialog" aria-label="Waypoint guide">
+      <button class="x" title="Pause the guide" aria-label="Pause the guide">×</button>
+      <div class="step"></div><div class="text"></div><div class="why"></div>
+      <div class="scroll"><span class="scroll-text"></span><button class="btn show-me">Show me</button></div>
+      <div class="src"></div><div class="arrow"></div>
+    </div>
+    <div class="pill" role="status" aria-live="polite"><span class="dot"></span><span class="pill-text"></span>
+      <span class="acts"><button class="btn resume">Resume</button><button class="btn ghost end">End</button></span></div>`;
   document.documentElement.appendChild(host);
-  const ring = shadow.querySelector(".ring");
-  const bubble = shadow.querySelector(".bubble");
-  const arrow = shadow.querySelector(".arrow");
-  shadow.querySelector(".x").addEventListener("click", () => {
-    hide();
-    safeSend({ type: "overlay-closed" });
-  });
+  const $s = (sel) => shadow.querySelector(sel);
+  const ring = $s(".ring");
+  const bubble = $s(".bubble");
+  const arrow = $s(".arrow");
+  const pillEl = $s(".pill");
 
   let target = null;
   let raf = 0;
+  let scrollers = []; // the target's scrollable ancestors (they clip it)
+  let lostSince = 0;
 
   // (Re)enter the top layer last, i.e. above any popover or dialog the page has opened.
   function raise() {
@@ -369,50 +409,183 @@
       host.showPopover();
     } catch {}
   }
-  // The page opened a popover or dialog after us: go back on top while guidance is showing.
+  const anyVisible = () => ring.style.display === "block" || pillEl.style.display === "flex";
+  function lower() {
+    if (anyVisible()) return;
+    try { host.hidePopover(); } catch {}
+  }
+  // The page opened a popover or dialog after us: go back on top while anything of ours is showing.
   document.addEventListener(
     "toggle",
     (e) => {
-      if (target && e.target !== host && e.newState === "open") raise();
+      if (anyVisible() && e.target !== host && e.newState === "open") raise();
     },
     true
   );
 
-  function place() {
-    if (!target || !target.isConnected) {
-      hide();
+  // ---- status chip: "Finding the way…", "Guide paused [Resume] [End]", "You're there" ----
+  let pillTimer = 0;
+  function pill(mode, text = "") {
+    clearTimeout(pillTimer);
+    if (!mode) {
+      pillEl.style.display = "none";
+      lower();
       return;
     }
-    let r = target.getBoundingClientRect();
-    const host = hoverOf.get(target);
-    if (host && (r.width < 4 || r.height < 4 || !isVisible(target))) r = host.getBoundingClientRect();
-    const pad = 4;
-    Object.assign(ring.style, {
-      left: `${r.left - pad}px`, top: `${r.top - pad}px`,
-      width: `${r.width + pad * 2}px`, height: `${r.height + pad * 2}px`,
-    });
+    pillEl.className = `pill ${mode}`;
+    $s(".pill-text").textContent = text;
+    pillEl.style.display = "flex";
+    raise();
+    if (mode === "done") pillTimer = setTimeout(() => pill(null), 2600);
+  }
+  $s(".resume").addEventListener("click", () => {
+    pill(null);
+    safeSend({ type: "resume" });
+  });
+  $s(".end").addEventListener("click", () => {
+    pill(null);
+    safeSend({ type: "end" });
+  });
+
+  // × pauses rather than ends: the guide can be resumed from the chip or the side panel.
+  $s(".x").addEventListener("click", () => {
+    hide();
+    pill("paused", "Guide paused");
+    safeSend({ type: "overlay-paused" });
+  });
+  $s(".show-me").addEventListener("click", () => target && target.scrollIntoView({ block: "center", behavior: "smooth" }));
+
+  // Elements that escape their ancestors' clipping: top-layer popovers/dialogs and position:fixed boxes
+  // (e.g. a flyout menu that lives inside a scrolling sidebar in the DOM but is drawn over the page).
+  const escapesClip = (n) =>
+    n.matches?.(":popover-open, dialog:modal") || getComputedStyle(n).position === "fixed";
+
+  function scrollParents(el) {
+    const out = [];
+    if (escapesClip(el)) return out;
+    for (let n = parentOf(el); n && n !== document.body && n !== document.documentElement; n = parentOf(n)) {
+      const cs = getComputedStyle(n);
+      if (/(auto|scroll|hidden|clip)/.test(cs.overflowY + cs.overflowX)) out.push(n);
+      if (escapesClip(n)) break; // its own scroll area still clips; its ancestors don't
+    }
+    return out;
+  }
+  /** The part of the viewport where the target can actually be seen (its scroll containers clip it). */
+  function clipRect() {
+    let c = { left: 0, top: 0, right: innerWidth, bottom: innerHeight };
+    for (const n of scrollers) {
+      const r = n.getBoundingClientRect();
+      c = { left: Math.max(c.left, r.left), top: Math.max(c.top, r.top), right: Math.min(c.right, r.right), bottom: Math.min(c.bottom, r.bottom) };
+    }
+    return c;
+  }
+  /** Does `outer` contain `inner`, across shadow-DOM boundaries? */
+  function composedContains(outer, inner) {
+    for (let n = inner; n; n = parentOf(n)) if (n === outer) return true;
+    return false;
+  }
+  /**
+   * Is the target drawn on top at this point, or covered (sticky footer, overlay, other panel)? Hit-test
+   * in the target's own (shadow) root: at document level a shadow-DOM control only reports its outer host.
+   */
+  function onTop(el, x, y) {
+    const root = el.getRootNode();
+    const hit = (root.elementFromPoint ? root : document).elementFromPoint(x, y);
+    if (!hit) return false;
+    if (hit === host) return true; // our own bubble, not the page covering it
+    const h = hoverOf.get(el);
+    return composedContains(el, hit) || composedContains(hit, el) || (!!h && composedContains(h, hit));
+  }
+  function inView(el) {
+    const r = el.getBoundingClientRect();
+    const c = clipRect();
+    const fully = r.top >= c.top - 1 && r.bottom <= c.bottom + 1 && r.left >= c.left - 1 && r.right <= c.right + 1;
+    return fully && onTop(el, r.left + r.width / 2, r.top + r.height / 2);
+  }
+
+  function anchorBubble(box, prefer) {
+    const r = { ...box, width: box.right - box.left }; // box is {left, top, right, bottom}
     const bw = bubble.offsetWidth, bh = bubble.offsetHeight;
-    const below = r.bottom + 14 + bh < innerHeight;
-    const topPx = below ? r.bottom + 12 : Math.max(8, r.top - bh - 12);
+    const below = prefer === "below" || (prefer !== "above" && r.bottom + 14 + bh < innerHeight);
+    const topPx = below ? Math.min(r.bottom + 12, innerHeight - bh - 8) : Math.max(8, r.top - bh - 12);
     const leftPx = Math.min(Math.max(8, r.left + r.width / 2 - bw / 2), innerWidth - bw - 8);
     bubble.style.left = `${leftPx}px`;
     bubble.style.top = `${topPx}px`;
     const ax = Math.min(Math.max(12, r.left + r.width / 2 - leftPx - 6), bw - 24);
     Object.assign(arrow.style, below ? { top: "-6px", bottom: "", left: `${ax}px` } : { bottom: "-6px", top: "", left: `${ax}px` });
+  }
+
+  let frame = 0;
+  let covered = false;
+  function place() {
     raf = requestAnimationFrame(place);
+    if (!target) return;
+    let el = target;
+    let r = el.getBoundingClientRect();
+    const hh = hoverOf.get(target);
+    if (hh && (r.width < 4 || r.height < 4 || !isVisible(target))) {
+      el = hh;
+      r = hh.getBoundingClientRect();
+    }
+    // The control went away (the page re-rendered, a drawer or menu closed): tell the panel so it can
+    // find the step again, instead of leaving a ring on nothing.
+    const gone = !target.isConnected || r.width < 2 || r.height < 2 || (!isVisible(el) && el === target);
+    if (gone) {
+      ring.style.opacity = "0";
+      bubble.style.visibility = "hidden";
+      if (!lostSince) lostSince = performance.now();
+      if (performance.now() - lostSince > 350) {
+        hide();
+        safeSend({ type: "target-lost" });
+      }
+      return;
+    }
+    lostSince = 0;
+    bubble.style.visibility = "";
+    const c = clipRect();
+    const vis = { left: Math.max(r.left, c.left), top: Math.max(r.top, c.top), right: Math.min(r.right, c.right), bottom: Math.min(r.bottom, c.bottom) };
+    if (++frame % 6 === 0) {
+      const cx = (vis.left + vis.right) / 2, cy = (vis.top + vis.bottom) / 2;
+      covered = vis.right > vis.left && vis.bottom > vis.top && !onTop(el, cx, cy);
+    }
+    const away = vis.right - vis.left < 4 || vis.bottom - vis.top < Math.min(8, r.height / 2) || covered;
+    bubble.classList.toggle("away", away);
+    if (away) {
+      // Scrolled out of its container (or covered): no ring on the wrong thing; point at the
+      // container's edge in the direction of the target instead.
+      ring.style.opacity = "0";
+      const down = r.top > (c.top + c.bottom) / 2;
+      $s(".scroll-text").textContent = down ? "↓ Scroll down to find it" : "↑ Scroll up to find it";
+      const edge = { left: Math.max(c.left, Math.min(r.left, c.right - r.width)), right: 0, top: down ? c.bottom : c.top, bottom: down ? c.bottom : c.top };
+      edge.right = edge.left + Math.min(r.width, c.right - c.left);
+      anchorBubble(edge, down ? "above" : "below");
+      return;
+    }
+    const pad = 4;
+    ring.style.opacity = "1";
+    Object.assign(ring.style, {
+      left: `${vis.left - pad}px`, top: `${vis.top - pad}px`,
+      width: `${vis.right - vis.left + pad * 2}px`, height: `${vis.bottom - vis.top + pad * 2}px`,
+    });
+    anchorBubble(vis);
   }
 
   function show(el, { step, text, why, src }) {
     target = el;
+    lostSince = 0;
+    covered = false;
+    pill(null);
     raise();
-    shadow.querySelector(".step").textContent = step || "";
-    shadow.querySelector(".text").textContent = text || "";
-    shadow.querySelector(".why").textContent = why || "";
-    shadow.querySelector(".src").textContent = src || "";
+    $s(".step").textContent = step || "";
+    $s(".text").textContent = text || "";
+    $s(".why").textContent = why || "";
+    $s(".src").textContent = src || "";
     ring.style.display = "block";
     bubble.style.display = "block";
-    const r = (isVisible(el) ? el : hoverOf.get(el) || el).getBoundingClientRect();
-    if (r.top < 0 || r.bottom > innerHeight) el.scrollIntoView({ block: "center", behavior: "smooth" });
+    const vis = isVisible(el) ? el : hoverOf.get(el) || el;
+    scrollers = scrollParents(vis);
+    // Bring it into view inside its own scroll area too (e.g. far down a sidebar), not just the window.
+    if (!inView(vis)) vis.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
     cancelAnimationFrame(raf);
     place();
   }
@@ -422,19 +595,22 @@
     cancelAnimationFrame(raf);
     ring.style.display = "none";
     bubble.style.display = "none";
-    try { host.hidePopover(); } catch {}
+    lower();
   }
 
   // When the user clicks the highlighted control, tell the side panel so it can advance.
   document.addEventListener(
     "click",
     (e) => {
-      if (target && e.composedPath().includes(target)) safeSend({ type: "target-clicked" });
+      if (target && e.composedPath().includes(target)) {
+        hide(); // clicked: the step is done, so its control disappearing next is expected, not "lost"
+        safeSend({ type: "target-clicked" });
+      }
     },
     true
   );
 
-  // SPA navigation: the Firebase console changes views without page loads.
+  // SPA navigation: single-page apps change views without page loads.
   let lastHref = location.href;
   const urlTimer = setInterval(() => {
     if (!live()) return clearInterval(urlTimer);
@@ -478,6 +654,10 @@
       }
       case "hide":
         hide();
+        reply({ ok: true });
+        break;
+      case "pill":
+        pill(msg.mode || null, msg.text || "");
         reply({ ok: true });
         break;
       case "status":

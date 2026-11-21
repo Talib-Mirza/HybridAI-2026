@@ -101,11 +101,17 @@ export function specificToGoal(goal, label, outline) {
   return goalStems.some((st) => labelStems.has(st));
 }
 
+/** "Open X" / "go to X" / "show me X" → "X" (else null). */
+export function navTarget(goal) {
+  const m = goal.trim().match(/^(?:please\s+)?(?:open|go to|show(?: me)?|take me to|navigate to|bring up)\s+(?:the\s+|my\s+)?(.+?)[.!?]*$/i);
+  return m ? m[1] : null;
+}
+
 /** "Open X" / "go to X" / "show me X": does this label name X? Then clicking it is the whole job. */
 export function namesNavTarget(goal, label) {
-  const m = goal.trim().match(/^(?:please\s+)?(?:open|go to|show(?: me)?|take me to|navigate to|bring up)\s+(?:the\s+|my\s+)?(.+?)[.!?]*$/i);
-  if (!m) return false;
-  const want = words(m[1]).map(stem);
+  const t = navTarget(goal);
+  if (!t) return false;
+  const want = words(t).map(stem);
   const have = new Set(words(label).map(stem));
   return want.length > 0 && want.every((st) => have.has(st));
 }

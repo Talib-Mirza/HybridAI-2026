@@ -11,15 +11,28 @@
       <span id="nano" class="badge">checking Nano…</span>
     </header>
 
+    <section id="site" class="site">
+      <div class="site-row">
+        <span id="site-text">Checking this page…</span>
+        <button type="button" id="site-enable" class="secondary" hidden>Enable on this site</button>
+        <button type="button" id="site-disable" class="link" hidden>Turn off here</button>
+      </div>
+      <label class="toggle"><input type="checkbox" id="all-sites" /> Allow on all sites</label>
+    </section>
+
     <form id="ask-form">
-      <textarea id="q" rows="3" placeholder="What do you want to do? e.g. Enforce App Check for Firebase AI Logic"></textarea>
+      <textarea id="q" rows="3" placeholder="What do you want to do? e.g. Create a service account key"></textarea>
       <div class="row">
         <button type="submit" id="ask">Guide me</button>
         <label class="toggle"><input type="checkbox" id="force-cloud" /> Cloud only</label>
       </div>
     </form>
 
-    <p id="status" class="status">Open a Firebase console tab, then ask.</p>
+    <p id="status" class="status">Open the page you need help with, then ask.</p>
+    <div id="paused" class="paused" hidden>
+      <button type="button" id="resume">Resume guide</button>
+      <button type="button" id="end" class="link">End guide</button>
+    </div>
 
     <section id="route" hidden>
       <h2>Route</h2>
