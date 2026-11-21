@@ -27,6 +27,8 @@
     "[role=treeitem]", "[role=combobox]", "mat-slide-toggle", "mat-checkbox",
     // Whole table rows are often the click target in consoles (e.g. App Check > APIs).
     "tbody tr", "[role=row]", "mat-row",
+    // Menu/section toggles, including custom elements (e.g. Firebase's <navbar-category>).
+    "[aria-expanded]", "[aria-haspopup]:not([aria-haspopup=false])",
   ].join(",");
   const ROW = "tbody tr,[role=row],mat-row";
   const CELL = "td,[role=cell],[role=gridcell],[role=rowheader],mat-cell";
@@ -98,6 +100,7 @@
     if (r) return r;
     if (el.matches(ROW)) return "row";
     const tag = el.tagName.toLowerCase();
+    if (el.hasAttribute("aria-expanded") && !isField(el) && !["button", "a"].includes(tag)) return "menu-toggle";
     if (tag === "a") return "link";
     if (tag === "input") {
       const t = (el.getAttribute("type") || "text").toLowerCase();
@@ -137,12 +140,19 @@
     );
   }
 
+  // Text fields use aria-expanded for their suggestion popups; that isn't a collapsed menu.
+  const isField = (el) =>
+    ["input", "textarea", "select"].includes(el.tagName.toLowerCase()) ||
+    ["combobox", "searchbox", "textbox"].includes(el.getAttribute("role"));
+
   function stateOf(el) {
     const s = [];
+    const menu = !isField(el);
     const checked = el.getAttribute("aria-checked") ?? (el.type === "checkbox" || el.type === "radio" ? String(el.checked) : null);
     if (checked != null) s.push(checked === "true" ? "on" : "off");
     if (el.getAttribute("aria-selected") === "true") s.push("selected");
-    if (el.getAttribute("aria-expanded") === "true") s.push("expanded");
+    if (menu && el.getAttribute("aria-expanded") === "true") s.push("expanded");
+    if (menu && el.getAttribute("aria-expanded") === "false") s.push("collapsed");
     if (el.getAttribute("aria-current")) s.push("current");
     if (el.disabled || el.getAttribute("aria-disabled") === "true") s.push("disabled");
     return s.join(",");
@@ -185,22 +195,67 @@
     return parts.join("; ");
   }
 
+  // Sites that pre-render collapsed menus keep hidden items in the DOM. Find the visible collapsed
+  // control (aria-expanded="false") that reveals a hidden element, if there is one.
+  function expanderFor(el) {
+    let n = el;
+    for (let i = 0; i < 12 && n; i++) {
+      n = parentOf(n);
+      if (!n || n === document.body || n === document.documentElement) break;
+      if (n.id) {
+        const ctl = document.querySelector(`[aria-controls="${CSS.escape(n.id)}"][aria-expanded="false"]`);
+        if (ctl && isVisible(ctl)) return ctl;
+      }
+      const prev = n.previousElementSibling;
+      if (prev && prev.matches('[aria-expanded="false"]') && isVisible(prev)) return prev;
+      const own = n.querySelector(':scope > [aria-expanded="false"]');
+      if (own && !own.contains(el) && isVisible(own)) return own;
+    }
+    return null;
+  }
+
   function buildOutline() {
     idToEl = new Map();
+    const ids = new Map();
     nextId = 1;
+    const idFor = (el) => {
+      let id = ids.get(el);
+      if (!id) {
+        id = `e${nextId++}`;
+        ids.set(el, id);
+        idToEl.set(id, el);
+        elToId.set(el, id);
+      }
+      return id;
+    };
     const seen = new Set();
     const items = [];
+    let hiddenCount = 0;
     for (const el of deepQueryAll(document, INTERACTIVE)) {
-      if (seen.has(el) || !isVisible(el)) continue;
+      if (seen.has(el)) continue;
       seen.add(el);
+      const visible = isVisible(el);
+      // Hidden controls count only when a visible collapsed menu reveals them.
+      const expander = visible || hiddenCount >= 80 ? null : expanderFor(el);
+      if (!visible && !expander) continue;
       const label = labelOf(el);
       if (!label) continue;
       // Drop a control nested inside another candidate with the same label (e.g. span inside button).
       const outer = parentOf(el)?.closest?.(INTERACTIVE);
       if (outer && seen.has(outer) && labelOf(outer) === label) continue;
-      const id = `e${nextId++}`;
-      idToEl.set(id, el);
-      elToId.set(el, id);
+      const id = idFor(el);
+      if (expander) {
+        hiddenCount++;
+        items.push({
+          id,
+          role: roleOf(el),
+          label: redact(label),
+          context: redact(`hidden inside collapsed "${labelOf(expander)}"`),
+          state: "hidden",
+          expander: idFor(expander),
+        });
+        continue;
+      }
       const r = el.getBoundingClientRect();
       items.push({
         id,

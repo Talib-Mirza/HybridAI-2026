@@ -1,5 +1,5 @@
 import "./sidepanel.css";
-import { pickElement, planRoute, hasKeywordHit, exactMatch } from "./pipeline.js";
+import { pickElement, planRoute, hasKeywordHit, exactMatch, looksDone } from "./pipeline.js";
 
 const $ = (id) => document.getElementById(id);
 const CONFIDENCE_MIN = 0.5; // below this, Nano's pick counts as "not found" and Waypoint escalates
@@ -12,6 +12,8 @@ const state = {
   i: 0,
   gen: 0, // bumps on every new question so stale work stops
   run: 0, // bumps on every step search so only the newest one may show a bubble
+  replans: 0, // automatic cloud re-plans used for the current goal
+  revealing: false, // the bubble is on a menu toggle; clicking it re-searches instead of advancing
 };
 
 let stepTimer = 0;
@@ -100,6 +102,39 @@ function renderSteps() {
 
 // ---------- Core flow ----------
 
+const MAX_AUTO_REPLANS = 2;
+
+/**
+ * Where to put the bubble for an outline item. A control hidden inside a collapsed menu is shown on the
+ * menu toggle instead ("reveal"); after the user opens it, the same step is searched again.
+ */
+function placement(outline, id, opensMenu = false) {
+  const item = outline.items.find((it) => it.id === id);
+  if (item?.expander) {
+    const exp = outline.items.find((it) => it.id === item.expander);
+    return { showId: item.expander, reveal: true, revealText: `Open "${exp?.label || "this menu"}" to reveal "${item.label}".` };
+  }
+  // Nano sometimes flags an ordinary item as a menu; only a control that is actually collapsed counts.
+  if (opensMenu && item?.state.includes("collapsed")) return { showId: id, reveal: true, revealText: `Open "${item?.label || "this menu"}"; what you need should be inside.` };
+  return { showId: id, reveal: false, revealText: "" };
+}
+
+async function show(where, bubble) {
+  state.revealing = where.reveal;
+  await send(state.tabId, {
+    type: "show",
+    id: where.showId,
+    ...bubble,
+    text: where.reveal ? where.revealText : bubble.text,
+    why: where.reveal ? bubble.text : bubble.why,
+  });
+}
+
+const labelFor = (outline, id) => {
+  const it = outline.items.find((x) => x.id === id);
+  return it ? ` "${it.label}"` : "";
+};
+
 async function locate(question, gen, run = state.run) {
   const stale = () => gen !== state.gen || run !== state.run;
   const outline = await send(state.tabId, { type: "outline" });
@@ -109,20 +144,30 @@ async function locate(question, gen, run = state.run) {
   log({
     kind: pick.source === "in_cloud" ? "in_cloud" : pick.source === "on_device" ? "on_device" : "info",
     title: `Find "${question.slice(0, 60)}"`,
-    detail: `${pick.elementId} · confidence ${Number(pick.confidence).toFixed(2)} · ${pick.candidates}/${pick.total} controls shortlisted · ${SOURCE_LABEL[pick.source] || pick.source}`,
+    detail: `${pick.elementId}${labelFor(outline, pick.elementId)}${pick.opensMenu ? " (opens a menu)" : ""} · confidence ${Number(pick.confidence).toFixed(2)} · ${pick.candidates}/${pick.total} controls shortlisted · ${SOURCE_LABEL[pick.source] || pick.source}`,
     sent: pick.sent,
     ms: pick.ms,
   });
-  const found =
-    pick.elementId !== "none" &&
-    pick.confidence >= CONFIDENCE_MIN &&
-    (await send(state.tabId, { type: "check", id: pick.elementId }))?.ok;
-  return { outline, pick, found };
+  if (pick.elementId === "none" || pick.confidence < CONFIDENCE_MIN) return { outline, pick, found: false };
+  const where = placement(outline, pick.elementId, pick.opensMenu);
+  const found = !!(await send(state.tabId, { type: "check", id: where.showId }))?.ok;
+  return { outline, pick, found, where };
+}
+
+/** The control's own status says the goal is already in place: say so and stop (no AI call). */
+async function reportDone(item, where) {
+  const evidence = looksDone(state.goal, item);
+  if (!evidence) return false;
+  log({ kind: "info", title: "Already done", detail: `"${item.label}" shows "${evidence}".` });
+  state.mode = "idle";
+  await show(where, { step: "Already done", text: `"${item.label}" already shows "${evidence}".`, why: "Nothing to change.", src: "Status check · no AI call" });
+  status("Already done: nothing to change.");
+  return true;
 }
 
 async function ask(question, tabId) {
   const gen = ++state.gen;
-  Object.assign(state, { tabId, mode: "idle", goal: question, steps: [], i: 0 });
+  Object.assign(state, { tabId, mode: "idle", goal: question, steps: [], i: 0, replans: 0, revealing: false });
   renderSteps();
   $("replan").hidden = true;
   await ensureFresh(tabId);
@@ -132,58 +177,62 @@ async function ask(question, tabId) {
     status("Reading this page…");
     const res = await locate(question, gen);
     if (!res) return;
-    if (res.found && (res.pick.completesGoal || res.pick.alreadyDone)) {
+    const { pick } = res;
+    const picked = res.found && res.outline.items.find((it) => it.id === pick.elementId);
+    if (picked && !res.where.reveal && (await reportDone(picked, res.where))) return;
+    if (res.found && (pick.completesGoal || pick.alreadyDone || res.where.reveal)) {
+      // The goal is on this page (possibly inside a collapsed menu): no route needed.
       state.mode = "single";
-      await send(tabId, {
-        type: "show",
-        id: res.pick.elementId,
-        step: res.pick.alreadyDone ? "Already done" : "Here",
-        text: res.pick.explanation,
-        src: SOURCE_LABEL[res.pick.source],
+      await show(res.where, {
+        step: pick.alreadyDone ? "Already done" : "Here",
+        text: pick.explanation,
+        src: SOURCE_LABEL[pick.source],
       });
-      status("Found it on this page.");
+      status(res.where.reveal ? "It's inside a collapsed menu on this page." : "Found it on this page.");
       return;
     }
     if (res.found) {
       // Nano knows the first move: show it instantly while the cloud plans the rest of the route.
-      await send(tabId, {
-        type: "show",
-        id: res.pick.elementId,
+      await show(res.where, {
         step: "Step 1",
-        text: res.pick.explanation,
+        text: pick.explanation,
         why: "Planning the rest of the route…",
-        src: SOURCE_LABEL[res.pick.source],
+        src: SOURCE_LABEL[pick.source],
       });
     }
-    await escalate(question, res.outline, res.pick, gen);
+    await escalate(question, res.outline, gen, { pick });
   } catch (e) {
     console.error(e);
     status(`Error: ${e?.message || e}`);
   }
 }
 
-async function escalate(goal, outline, pick, gen) {
+async function escalate(goal, outline, gen, { pick = null, failed = null } = {}) {
+  const done = state.steps.slice(0, state.i).map((s) => s.target);
   log({
     kind: "escalate",
-    title: "Escalating to cloud Gemini",
-    detail:
-      pick.elementId === "none"
+    title: failed ? "Re-planning with cloud Gemini" : "Escalating to cloud Gemini",
+    detail: failed
+      ? `The planned step "${failed}" isn't on this page, so the route is re-planned from what is.`
+      : pick.elementId === "none"
         ? "Gemini Nano found no matching control on this page, so a route is needed."
         : pick.confidence < CONFIDENCE_MIN
           ? `Gemini Nano's best match was only ${Number(pick.confidence).toFixed(2)} confident.`
           : "Gemini Nano found the first step; the goal is on another page, so the cloud plans the route.",
   });
-  status("Planning the route with cloud Gemini…");
-  const plan = await planRoute({ goal, outline });
+  status(failed ? "Re-planning from this page with cloud Gemini…" : "Planning the route with cloud Gemini…");
+  const plan = await planRoute({ goal, outline, done, failed });
   if (gen !== state.gen) return;
   log({
     kind: "in_cloud",
-    title: `Route planned (${plan.steps.length} steps)`,
+    title: `Route ${failed ? "re-planned" : "planned"} (${plan.steps.length} steps)`,
     detail: `${plan.model}${plan.grounded ? " · grounded with Google Search" : ""} · ${plan.steps.map((s) => s.target).join(" → ")}`,
     sent: plan.sent,
     ms: plan.ms,
   });
-  Object.assign(state, { mode: "route", steps: plan.steps, i: 0 });
+  // A re-plan replaces the remaining steps; completed ones stay visible.
+  const kept = failed ? state.steps.slice(0, state.i) : [];
+  Object.assign(state, { mode: "route", steps: [...kept, ...plan.steps], i: kept.length });
   renderSteps();
   scheduleStep(0);
 }
@@ -200,6 +249,7 @@ async function runStep(gen, attempt, run) {
     return;
   }
   renderSteps();
+  const of = () => `Step ${state.i + 1} of ${state.steps.length}`;
   try {
     await ensureFresh(state.tabId);
     const outline = await send(state.tabId, { type: "outline" });
@@ -209,51 +259,48 @@ async function runStep(gen, attempt, run) {
     // so a stale planner step (or one the user already did) is skipped for free.
     for (let j = Math.min(state.i + 2, state.steps.length - 1); j >= state.i; j--) {
       const hit = exactMatch(state.steps[j].target, outline.items);
-      if (!hit || !(await send(state.tabId, { type: "check", id: hit.id }))?.ok) continue;
+      if (!hit) continue;
+      const where = placement(outline, hit.id);
+      if (!(await send(state.tabId, { type: "check", id: where.showId }))?.ok) continue;
       if (stale()) return;
       if (j > state.i) log({ kind: "info", title: `Skipped to step ${j + 1}`, detail: `"${state.steps[j].target}" is already on screen.` });
-      log({ kind: "info", title: `Exact match: "${hit.label}"`, detail: "Found by label, no AI call needed." });
+      log({ kind: "info", title: `Exact match: "${hit.label}"${where.reveal ? " (inside a collapsed menu)" : ""}`, detail: "Found by label, no AI call needed." });
       state.i = j;
       renderSteps();
-      await send(state.tabId, {
-        type: "show",
-        id: hit.id,
-        step: `Step ${j + 1} of ${state.steps.length}`,
-        text: state.steps[j].instruction,
-        src: "Exact label match · no AI call",
-      });
-      status(`Step ${j + 1} of ${state.steps.length}: ${state.steps[j].instruction}`);
+      if (await reportDone(hit, where)) return;
+      await show(where, { step: of(), text: state.steps[j].instruction, src: "Exact label match · no AI call" });
+      status(`${of()}: ${where.reveal ? where.revealText : state.steps[j].instruction}`);
       return;
     }
 
     // Rung 2, Gemini Nano: the current step, then the next one (the user may have skipped ahead).
+    // Only when the target's words are actually on screen; otherwise there is nothing for Nano to find
+    // and guessing (e.g. "some menu") does more harm than re-planning.
+    let tried = false;
     for (const j of [state.i, state.i + 1]) {
       const step = state.steps[j];
-      if (!step) continue;
-      // Pages load late: don't spend a model call until the target's words are on screen.
-      if (attempt < 3 && !hasKeywordHit(step.target, outline.items)) continue;
+      if (!step || !hasKeywordHit(step.target, outline.items)) continue;
+      tried = true;
       status(`Step ${j + 1}: looking for "${step.target}"…`);
       const res = await locate(`"${step.target}" (${step.instruction}; ${step.where})`, gen, run);
       if (!res || stale()) return;
       if (res.found) {
         state.i = j;
         renderSteps();
-        await send(state.tabId, {
-          type: "show",
-          id: res.pick.elementId,
-          step: `Step ${j + 1} of ${state.steps.length}`,
-          text: step.instruction,
-          why: res.pick.explanation,
-          src: SOURCE_LABEL[res.pick.source],
-        });
-        status(`Step ${j + 1} of ${state.steps.length}: ${step.instruction}`);
+        await show(res.where, { step: of(), text: step.instruction, why: res.pick.explanation, src: SOURCE_LABEL[res.pick.source] });
+        status(`${of()}: ${res.where.reveal ? res.where.revealText : step.instruction}`);
         return;
       }
     }
     if (stale()) return;
-    if (attempt < 5) {
+    // Give a loading page ~2 s; give Nano up to 4 tries when the target's words are on screen.
+    if (attempt < 2 || (tried && attempt < 4)) {
       status("Waiting for the page to load…");
       stepTimer = setTimeout(() => runStep(gen, attempt + 1, run), 900);
+    } else if (state.replans < MAX_AUTO_REPLANS) {
+      // Rung 3, cloud: the plan was wrong for this page; re-plan from what's actually on screen.
+      state.replans += 1;
+      await escalate(state.goal, outline, gen, { failed: state.steps[state.i].target });
     } else {
       status(`Couldn't find "${state.steps[state.i].target}" here. Navigate there, or re-plan from this page.`);
       $("replan").hidden = false;
@@ -279,10 +326,12 @@ $("ask-form").addEventListener("submit", async (e) => {
 });
 
 $("replan").addEventListener("click", async () => {
-  const gen = ++state.gen;
+  const gen = state.gen;
   $("replan").hidden = true;
   const outline = await send(state.tabId, { type: "outline" });
-  escalate(state.goal, outline, { elementId: "none", confidence: 0 }, gen).catch((e) => status(`Error: ${e?.message}`));
+  escalate(state.goal, outline, gen, { failed: state.steps[state.i]?.target || "(unknown)" }).catch((e) =>
+    status(`Error: ${e?.message}`)
+  );
 });
 
 let lastCommand = { key: "", at: 0 };
@@ -299,13 +348,17 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
   }
   if (fromTab !== state.tabId) return;
   if (msg.type === "target-clicked") {
-    if (state.mode === "route") {
+    send(state.tabId, { type: "hide" });
+    if (state.revealing) {
+      // They opened a menu: search the same step again now that its items are showing.
+      state.revealing = false;
+      if (state.mode === "route") scheduleStep(600);
+      else if (state.mode === "single") setTimeout(() => ask(state.goal, state.tabId), 600);
+    } else if (state.mode === "route") {
       state.i += 1;
-      send(state.tabId, { type: "hide" });
       scheduleStep(800);
     } else if (state.mode === "single") {
       state.mode = "idle";
-      send(state.tabId, { type: "hide" });
       status("Done.");
     }
   } else if (msg.type === "url-changed" && state.mode === "route") {

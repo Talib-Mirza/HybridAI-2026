@@ -1,6 +1,7 @@
 // Waypoint's two AI jobs:
 //   pickElement — on-device (Gemini Nano) grounding: choose ONE control from a shortlist of real ids.
-//   planRoute   — cloud (Gemini + Google Search) planning: a multi-page route described in words.
+//   planRoute   — cloud Gemini planning: a multi-page route described in words, re-planned from the
+//                 live page whenever a step isn't where the plan expected.
 import { ai, getGenerativeModel, InferenceMode, CLOUD_MODEL, PLANNER_MODEL } from "./firebase-ext.js";
 
 const STOP = new Set(
@@ -70,6 +71,17 @@ export function exactMatch(target, items) {
   return items.find((it) => norm(it.label) === t && !it.state.includes("disabled")) || null;
 }
 
+/**
+ * No-AI "already done" check: the matched control's status shows the goal's action in the past tense
+ * (goal "enforce …" and a row reading "Enforced", "enable" → "Enabled"). Negated forms don't count.
+ */
+export function looksDone(goal, item) {
+  const verbs = new Set(words(goal).map(stem));
+  const parts = [...(item.context || "").replace(/^row cells:\s*/, "").split(" · "), item.state || ""];
+  const hit = parts.find((p) => words(p).some((w) => /ed$/.test(w) && !/^(un|not|dis)/.test(w) && verbs.has(stem(w))));
+  return hit ? hit.trim() : null; // the status text that shows it, e.g. "Basic - Enforced Replay - Monitoring"
+}
+
 export const line = (it) =>
   [it.id, it.role, `"${it.label}"`, it.context, it.state].filter(Boolean).join(" | ");
 
@@ -88,9 +100,10 @@ export async function pickElement({ question, outline, forceCloud = false }) {
       confidence: { type: "number" },
       completesGoal: { type: "boolean" },
       alreadyDone: { type: "boolean" },
+      opensMenu: { type: "boolean" },
       explanation: { type: "string" },
     },
-    required: ["elementId", "confidence", "completesGoal", "alreadyDone", "explanation"],
+    required: ["elementId", "confidence", "completesGoal", "alreadyDone", "opensMenu", "explanation"],
   };
 
   const model = getGenerativeModel(
@@ -120,9 +133,10 @@ The user wants: "${question}"
 Candidate controls on this page (id | role | label | context | state):
 ${cands.map(line).join("\n")}
 
-Choose the single control the user should interact with NEXT to make progress on what they want. Prefer a control whose label matches the request. If no candidate helps, choose "none".
+Choose the single control the user should interact with NEXT to make progress on what they want. Prefer a control whose label matches the request. Controls with state "hidden" sit inside a collapsed menu; you may choose them. If the needed control is not listed but probably sits inside a collapsed menu or section (state "collapsed"), choose that collapsed control. If no candidate helps, choose "none".
 confidence: 0 to 1, how sure you are that this is the right control.
 completesGoal: true only if using this control directly accomplishes what the user wants, here on this page; false if it is only a first step that leads to another page.
+opensMenu: true if you chose a collapsed menu or section to reveal the control the user needs.
 alreadyDone: true only if the chosen control's state or row cells show the user's goal is ALREADY in place (for example a status reading "Enforced" when they want to enforce); otherwise false.
 explanation: one short sentence (max 25 words) telling the user what to do with this control and why.`;
 
@@ -147,12 +161,22 @@ function extractJson(text) {
   return JSON.parse(text.slice(a, b + 1));
 }
 
-/** Escalation: cloud Gemini, grounded with Google Search, plans the route in words (never selectors). */
-export async function planRoute({ goal, outline }) {
-  const nav = outline.items
-    .slice(0, 70)
+/**
+ * Escalation: cloud Gemini plans the route in words (never selectors). Site-agnostic: it only sees the
+ * goal and the current page's redacted outline. When a step can't be found, it is called again with the
+ * steps already done and the missing target, so it re-plans from what is actually on screen.
+ */
+export async function planRoute({ goal, outline, done = [], failed = null }) {
+  // Navigation and menu toggles first: they carry the app's structure, which is what a route needs.
+  const isNav = (it) => /collapsed|expanded|hidden/.test(it.state) || /navigation/.test(it.context);
+  const nav = [...outline.items.filter(isNav), ...outline.items.filter((it) => !isNav(it))]
+    .slice(0, 80)
     .map((it) => [it.role, `"${it.label}"`, it.context, it.state].filter(Boolean).join(" | "));
-  const prompt = `You are guiding a user through the Firebase console web UI (console.firebase.google.com). Use your knowledge of the current Firebase console layout and documentation.
+  const replan = failed
+    ? `\nSteps the user has already completed: ${done.length ? done.map((d) => `"${d}"`).join(" → ") : "(none)"}
+The previous plan expected a control labelled "${failed}" on this page, but it is NOT here. That plan was wrong or out of date. Re-plan the remaining route from the controls that ARE on this page.\n`
+    : "";
+  const prompt = `You are guiding a user through a web app's UI. Use your knowledge of this app's current layout, but trust the visible controls over your memory: apps get redesigned and renamed.
 
 Goal: "${goal}"
 
@@ -160,26 +184,28 @@ The user is currently on:
 ${pageHeader(outline)}
 Visible controls on this page (role | label | context | state; personal values are redacted):
 ${nav.join("\n")}
+${replan}
 
 Return the steps as JSON: each step has "instruction" (short imperative sentence for the user), "target" (the control's visible label exactly as it appears on screen) and "where" (where on screen it is).
 
-Example of a complete route for a DIFFERENT goal ("turn on email/password sign-in", starting from the console home page):
-1. target "My Project" — open the project from its card
-2. target "Build" — expand Build in the left navigation
-3. target "Authentication" — open Authentication
-4. target "Sign-in method" — open the Sign-in method tab
-5. target "Email/Password" — open the Email/Password provider row
-6. target "Enable" — switch Enable on, then review and save yourself
+Example of a complete route in a DIFFERENT app (goal "invite a teammate to my workspace", starting on the dashboard, where the left navigation has collapsed sections "Workspace" and "Billing"):
+1. target "Acme Team" — open the workspace from its card
+2. target "Workspace" — open the collapsed Workspace section in the left navigation
+3. target "Members" — open Members
+4. target "Invite" — click Invite
+5. target "Email address" — type the teammate's email, then review and send it yourself
 
 Rules:
-- Plan the COMPLETE route from the current page to the goal, including steps on pages the user hasn't reached yet. You only see the current page's controls; for later pages, use your knowledge of the console's left navigation, tabs and buttons.
+- Plan the COMPLETE route from the current page to the goal, including steps on pages the user hasn't reached yet. You only see the current page's controls; for later pages, use your knowledge of the app's navigation, tabs and buttons.
 - Start from the CURRENT page. At most 8 steps. Each step is one click or one field to fill.
-- "target" must be visible text in the console UI: a left-navigation item, a tab name, a row name or a button label.
+- "target" must be visible text in the UI: a navigation item, a tab name, a row name or a button label. When the next control is already listed above, use its label exactly.
+- Controls with state "collapsed" are menus or sections whose items are NOT listed above. Apps reorganise their navigation into such groups, so if the item you need isn't listed, open the collapsed group whose name best fits it (e.g. a "Users" page usually sits under a group like "Admin" or "People"), then continue with the item itself.
+- Navigate with the app's own navigation, tabs and buttons. Don't route through a search box unless no listed control or collapsed group could lead there.
 - If a step means opening a project, use the project's name exactly as shown on its card as the target.
 - Never invent values or secrets. Stop before any final irreversible confirmation and tell the user to review it themselves.`;
 
-  // Note: Google Search grounding returns 429 on the free tier, so planning runs ungrounded for now;
-  // docs grounding will come from fetching the relevant Firebase docs page ourselves.
+  // Deliberately ungrounded: re-planning from the live page corrects stale knowledge on any site, with
+  // no Search latency or billing (Search grounding also returns 429 on the free tier).
   const run = async (modelName, timeout) => {
     const schema = {
       type: "object",
