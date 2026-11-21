@@ -47,6 +47,14 @@ function score(item, stems) {
 
 /** Cheap, deterministic pre-filter so the prompt fits Gemini Nano's small context. */
 export function shortlist(question, items, k = 40) {
+  // Repeated controls ("Expand this log entry" × 30) would crowd out everything else: keep two of each.
+  const seenLabel = new Map();
+  items = items.filter((it) => {
+    const key = `${it.role}|${it.label}`;
+    const n = (seenLabel.get(key) || 0) + 1;
+    seenLabel.set(key, n);
+    return n <= 2;
+  });
   if (items.length <= k) return items;
   const stems = queryStems(question);
   return items
@@ -96,9 +104,11 @@ export function exactMatch(target, items, kind = null) {
   const t = norm(target);
   if (!t) return null;
   const hits = items.filter((it) => norm(it.label) === t && !/disabled|current|selected/.test(it.state) && kindFits(kind, it));
-  // Same name twice (the app's "Settings" menu and this page's "Settings" tab): the page's own control
-  // is the more specific one.
-  return hits.find((it) => it.main) || hits[0] || null;
+  // Same name twice: one the user can actually reach (not behind an open drawer or dialog) first; then
+  // the page's own control over the app's navigation ("Settings" tab vs "Settings" menu).
+  const reachable = hits.filter((it) => !/covered/.test(it.state));
+  const pool = reachable.length ? reachable : hits;
+  return pool.find((it) => it.main) || pool[0] || null;
 }
 
 /**
@@ -115,7 +125,12 @@ export function closeMatch(target, items, kind = null) {
     if (/disabled|current|selected/.test(it.state) || !kindFits(kind, it)) continue;
     const l = norm(it.label).split(" ").filter(Boolean);
     if (l.length < 2 || !l.every((w) => want.has(w)) || l.length / t.length < 0.6) continue;
-    if (!best || l.length > norm(best.label).split(" ").length || (l.length === norm(best.label).split(" ").length && it.main && !best.main)) best = it;
+    const bl = best ? norm(best.label).split(" ").length : 0;
+    const better =
+      !best ||
+      (/covered/.test(best.state) && !/covered/.test(it.state)) ||
+      (!/covered/.test(it.state) === !/covered/.test(best.state) && (l.length > bl || (l.length === bl && it.main && !best.main)));
+    if (better) best = it;
   }
   return best;
 }
@@ -234,7 +249,7 @@ The user wants: "${question}"
 Controls on this page (id | role | label | context | state):
 ${compactLines(cands).join("\n")}
 
-Choose the control the user should use NEXT. Prefer one whose label matches the request. If the request says it's a row, choose the row or the link that names the item, not an icon or button inside the row. State "current" is the page the user is already on: never choose it. State "hidden" or "on hover" controls exist but need a menu opened or the row hovered; you may choose them. If the needed control isn't listed but probably sits inside a collapsed menu (state "collapsed"), choose that menu. If nothing helps, choose "none".
+Choose the control the user should use NEXT. Prefer one whose label matches the request. If the request says it's a row, choose the row or the link that names the item, not an icon or button inside the row. State "current" is the page the user is already on: never choose it. State "covered" means something (an open drawer or dialog) is on top of it right now: prefer an uncovered control. State "hidden" or "on hover" controls exist but need a menu opened or the row hovered; you may choose them. If the needed control isn't listed but probably sits inside a collapsed menu (state "collapsed"), choose that menu. If nothing helps, choose "none".
 completesGoal: true only if using this control directly does what the user wants, on this page.
 opensMenu: true if you chose a collapsed menu to reveal what the user needs.`;
 
@@ -640,8 +655,8 @@ Leave out anything the pages don't cover. No markdown.`;
 export async function suggestDocs({ question, title = "", host = "", labels = [] }) {
   const schema = {
     type: "object",
-    properties: { urls: { type: "array", items: { type: "string" }, maxItems: 3 } },
-    required: ["urls"],
+    properties: { urls: { type: "array", items: { type: "string" }, maxItems: 3 }, home: { type: "string" } },
+    required: ["urls", "home"],
   };
   const model = getGenerativeModel(
     ai,
@@ -652,9 +667,11 @@ export async function suggestDocs({ question, title = "", host = "", labels = []
     { timeout: 15_000 }
   );
   const prompt = `A user of the web app at ${host} (page "${title}") asked: "${question}"
-${labels.length ? `Related controls on their screen: ${labels.slice(0, 12).map((l) => `"${l}"`).join(", ")}\n` : ""}Give up to 3 URLs of the app's OFFICIAL documentation pages that explain this, most specific first. Only real pages on the vendor's own docs site; no blogs, forums or videos.`;
+${labels.length ? `Related controls on their screen: ${labels.slice(0, 12).map((l) => `"${l}"`).join(", ")}\n` : ""}Give up to 3 URLs of the app's OFFICIAL documentation pages that explain this, most specific first, and "home": the documentation home page of the product or feature involved (e.g. the docs root for that product). Only real pages on the vendor's own docs site; no blogs, forums or videos.`;
   const t0 = performance.now();
   const r = (await model.generateContent(prompt)).response;
-  const urls = (JSON.parse(r.text()).urls || []).filter((u) => /^https:\/\//.test(u)).slice(0, 3);
-  return { urls, ms: Math.round(performance.now() - t0), sent: prompt };
+  const out = JSON.parse(r.text());
+  const urls = (out.urls || []).filter((u) => /^https:\/\//.test(u)).slice(0, 3);
+  const home = /^https:\/\//.test(out.home || "") ? out.home : "";
+  return { urls, home, ms: Math.round(performance.now() - t0), sent: prompt };
 }

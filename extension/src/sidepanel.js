@@ -215,6 +215,7 @@ function lookupDocs({ question, tabId, outline, labels = [], nearLinks = [] }) {
         d.sources?.length ? d.sources.map(shortUrl).join(" · ") : "",
         d.suggested?.length ? `Gemini suggested ${d.suggested.map(shortUrl).join(", ")}` : "",
         d.how === "fetched" ? "Fetched by Waypoint; relevant sections go to the AI." : "",
+        d.failed?.length ? `Couldn't load: ${d.failed.join(", ")}` : "",
       ]
         .filter(Boolean)
         .join(" · "),
@@ -246,7 +247,7 @@ $("docs-allow-btn").addEventListener("click", () => {
   });
 });
 
-const docsTextFor = (d, query, max = 1800, phrase = "") => (!d || d.how === "none" ? "" : d.text(query, max, phrase) || "");
+const docsTextFor = (d, query, max = 1800, phrase = "", opts = {}) => (!d || d.how === "none" ? "" : d.text(query, max, phrase, opts) || "");
 
 // ---------- Core flow ----------
 
@@ -413,7 +414,7 @@ async function escalate(goal, outline, gen, { pick = null, failed = null, unfini
   // means the model's memory of this app was wrong.
   const docs = await withTimeout(state.docsP, failed || unfinished ? 6000 : 2500);
   if (gen !== state.gen) return;
-  const docsText = docsTextFor(docs, goal, 1800);
+  const docsText = docsTextFor(docs, goal, 2000, "", { ui: true });
   if (docsText) state.docUrl = docs.urlFor(goal);
   const plan = await planRoute({ goal, outline, done, failed, unfinished, vanished, docs: docsText });
   state.recover = vanished ? failed : null;
@@ -553,6 +554,7 @@ async function runStep(gen, attempt, run) {
     // Only when the target's words are actually on screen; otherwise there is nothing for Nano to find
     // and guessing (e.g. "some menu") does more harm than re-planning.
     let tried = false;
+    let rejected = false; // Nano found something, but it was the wrong kind / already open / covered
     for (const j of [state.i, state.i + 1]) {
       const step = state.steps[j];
       if (!step || !hasKeywordHit(step.target, outline.items)) continue;
@@ -562,8 +564,15 @@ async function runStep(gen, attempt, run) {
       const res = await locate(`"${step.target}"${step.kind ? `, a ${step.kind}` : ""} (${step.instruction}; ${step.where})`, gen, run);
       if (!res || stale()) return;
       const pickedItem = res.outline.items.find((it) => it.id === res.pick.elementId);
+      if (res.found && /expanded|covered/.test(pickedItem?.state || "")) {
+        // A menu that's already open, or a control under something: not the next thing to click.
+        log({ kind: "info", title: `Not "${pickedItem.label}"`, detail: /expanded/.test(pickedItem.state) ? "That menu is already open." : "Something is on top of it right now." });
+        rejected = true;
+        continue;
+      }
       if (res.found && !kindFits(step.kind, pickedItem) && !res.where.reveal) {
         log({ kind: "info", title: `Not "${pickedItem.label}"`, detail: `The plan wants a ${step.kind}; that's a different kind of control with the same name.` });
+        rejected = true;
         continue;
       }
       if (res.found && /current|selected/.test(pickedItem?.state || "")) {
@@ -584,6 +593,13 @@ async function runStep(gen, attempt, run) {
       }
     }
     if (stale()) return;
+    // Nano looked and only found wrong candidates: asking it again won't help, the plan is wrong for
+    // this page. Re-plan now instead of after four slow tries.
+    if (rejected && state.replans < MAX_AUTO_REPLANS) {
+      state.replans += 1;
+      await escalate(state.goal, outline, gen, { failed: state.steps[state.i].target });
+      return;
+    }
     // Give a loading page ~2 s; give Nano up to 4 tries when the target's words are on screen.
     if (attempt < 2 || (tried && attempt < 4)) {
       status("Waiting for the page to load…");
@@ -951,7 +967,7 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
         const perms = (await chrome.permissions.getAll()).origins;
         send(fromTab, {
           type: "debug",
-          text: `docs ↓ ${JSON.stringify({ how: d.how, list: d.list, needs: d.needs, sources: d.sources, ms: d.ms, perms, text: d.text ? d.text(question, 900) : "" })}`,
+          text: `docs ↓ ${JSON.stringify({ how: d.how, list: d.list, failed: d.failed, needs: d.needs, sources: d.sources, ms: d.ms, text: d.text ? d.text(question, 900) : "" })}`,
         });
       } catch (e) {
         send(fromTab, { type: "debug", text: `docs error: ${e?.message || e}` });

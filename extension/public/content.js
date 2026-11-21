@@ -138,8 +138,11 @@
   const stripShortcut = (t) =>
     t.replace(/\s*\((?:[^\w\s()]{1,3}|(?:ctrl|cmd|command|option|alt|shift|⌘|⌥)[^()]{0,20}|[a-z]\s*then\s*[a-z])\)\s*$/i, "").trim() || t;
 
+  // Screen-reader position info ("Log router, 3 of 8") isn't part of the name either.
+  const stripPosition = (t) => t.replace(/,\s*\d+\s+of\s+\d+\s*$/i, "").trim() || t;
+
   function labelOf(el) {
-    return stripShortcut(rawLabelOf(el));
+    return stripPosition(stripShortcut(rawLabelOf(el)));
   }
 
   function rawLabelOf(el) {
@@ -335,12 +338,15 @@
         continue;
       }
       const r = el.getBoundingClientRect();
+      // Something else drawn on top of it right now (e.g. page content behind an open drawer or dialog).
+      const inView = r.bottom > 0 && r.top < innerHeight && r.right > 0 && r.left < innerWidth;
+      const covered = inView && !onTop(el, Math.min(Math.max(r.left + r.width / 2, 1), innerWidth - 1), Math.min(Math.max(r.top + r.height / 2, 1), innerHeight - 1));
       items.push({
         id,
         role: roleOf(el),
         label: redact(label),
         context: redact(contextOf(el)),
-        state: stateOf(el),
+        state: [stateOf(el), covered ? "covered" : ""].filter(Boolean).join(","),
         offscreen: r.bottom < 0 || r.top > innerHeight,
         main: inMain(el),
       });
@@ -650,16 +656,51 @@
     return fully && onTop(el, r.left + r.width / 2, r.top + r.height / 2);
   }
 
+  // Open menus, dropdowns and dialogs on the page: the bubble must not sit on top of them (it would hide
+  // the very option the user was just told to pick). Refreshed every few frames.
+  let obstacles = [];
+  function refreshObstacles() {
+    obstacles = [];
+    for (const n of document.querySelectorAll("[role=menu],[role=listbox],[role=dialog],[role=alertdialog],.cdk-overlay-pane,[popover]")) {
+      if (n === host || !n.isConnected) continue;
+      if (n.hasAttribute("popover") && !n.matches(":popover-open")) continue;
+      const r = n.getBoundingClientRect();
+      if (r.width < 24 || r.height < 24 || !isVisible(n)) continue;
+      // The control is inside it: a dialog is fine to sit in (it's usually big), but a menu or dropdown
+      // still counts, so the bubble goes beside the menu instead of over its other options.
+      if (target && composedContains(n, target) && !n.matches("[role=menu],[role=listbox],.cdk-overlay-pane")) continue;
+      obstacles.push(r);
+    }
+  }
+  const overlaps = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+
+  /** Place the bubble beside the box: below, above, right or left, avoiding open menus and dialogs. */
   function anchorBubble(box, prefer) {
-    const r = { ...box, width: box.right - box.left }; // box is {left, top, right, bottom}
-    const bw = bubble.offsetWidth, bh = bubble.offsetHeight;
-    const below = prefer === "below" || (prefer !== "above" && r.bottom + 14 + bh < innerHeight);
-    const topPx = below ? Math.min(r.bottom + 12, innerHeight - bh - 8) : Math.max(8, r.top - bh - 12);
-    const leftPx = Math.min(Math.max(8, r.left + r.width / 2 - bw / 2), innerWidth - bw - 8);
-    bubble.style.left = `${leftPx}px`;
-    bubble.style.top = `${topPx}px`;
-    const ax = Math.min(Math.max(12, r.left + r.width / 2 - leftPx - 6), bw - 24);
-    Object.assign(arrow.style, below ? { top: "-6px", bottom: "", left: `${ax}px` } : { bottom: "-6px", top: "", left: `${ax}px` });
+    const r = { ...box, width: box.right - box.left, height: box.bottom - box.top }; // box: {left, top, right, bottom}
+    const bw = bubble.offsetWidth, bh = bubble.offsetHeight, gap = 12, m = 8;
+    const cx = (x) => Math.min(Math.max(m, x), innerWidth - bw - m);
+    const cy = (y) => Math.min(Math.max(m, y), innerHeight - bh - m);
+    const sides = {
+      below: { x: cx(r.left + r.width / 2 - bw / 2), y: r.bottom + gap, fits: r.bottom + gap + bh <= innerHeight - m },
+      above: { x: cx(r.left + r.width / 2 - bw / 2), y: r.top - gap - bh, fits: r.top - gap - bh >= m },
+      right: { x: r.right + gap, y: cy(r.top + r.height / 2 - bh / 2), fits: r.right + gap + bw <= innerWidth - m },
+      left: { x: r.left - gap - bw, y: cy(r.top + r.height / 2 - bh / 2), fits: r.left - gap - bw >= m },
+    };
+    const order = prefer === "above" ? ["above", "below", "right", "left"] : ["below", "above", "right", "left"];
+    const clear = (k) => !obstacles.some((o) => overlaps({ left: sides[k].x, top: sides[k].y, right: sides[k].x + bw, bottom: sides[k].y + bh }, o));
+    const side = order.find((k) => sides[k].fits && clear(k)) || order.find((k) => sides[k].fits) || "below";
+    const pos = sides[side];
+    const x = side === "below" || side === "above" ? pos.x : pos.x;
+    const y = side === "below" ? Math.min(pos.y, innerHeight - bh - m) : side === "above" ? Math.max(m, pos.y) : pos.y;
+    bubble.style.left = `${x}px`;
+    bubble.style.top = `${y}px`;
+    if (side === "below" || side === "above") {
+      const ax = Math.min(Math.max(12, r.left + r.width / 2 - x - 6), bw - 24);
+      Object.assign(arrow.style, side === "below" ? { top: "-6px", bottom: "", left: `${ax}px`, right: "" } : { bottom: "-6px", top: "", left: `${ax}px`, right: "" });
+    } else {
+      const ay = Math.min(Math.max(12, r.top + r.height / 2 - y - 6), bh - 24);
+      Object.assign(arrow.style, side === "right" ? { left: "-6px", right: "", top: `${ay}px`, bottom: "" } : { right: "-6px", left: "", top: `${ay}px`, bottom: "" });
+    }
   }
 
   let frame = 0;
@@ -692,15 +733,18 @@
     const c = clipRect();
     const vis = { left: Math.max(r.left, c.left), top: Math.max(r.top, c.top), right: Math.min(r.right, c.right), bottom: Math.min(r.bottom, c.bottom) };
     if (++frame % 6 === 0) {
-      // Covered = most of five points across the control are under something else (one point at the
-      // centre was fooled by a passing tooltip). Only the control itself counts: a hover-only control's
-      // row is often overlapped by its own expanded details.
+      refreshObstacles();
+      // Covered = the control is really under something else, judged at its centre and four inner points
+      // (the centre alone was fooled by a passing tooltip). Only the control itself counts: a hover-only
+      // control's row is often overlapped by its own expanded details.
       covered = false;
       if (el === target && vis.right > vis.left && vis.bottom > vis.top) {
         const w = vis.right - vis.left, h = vis.bottom - vis.top;
-        const pts = [[0.5, 0.5], [0.2, 0.25], [0.8, 0.25], [0.2, 0.75], [0.8, 0.75]];
-        const hidden = pts.filter(([fx, fy]) => !onTop(el, vis.left + w * fx, vis.top + h * fy)).length;
-        covered = hidden >= 4;
+        // Covered needs the centre hidden AND 3 of 4 inner points: a tooltip over just the centre, or
+        // corners that fall outside a rounded button's box, don't count.
+        const hiddenAt = (fx, fy) => !onTop(el, vis.left + w * fx, vis.top + h * fy);
+        const corners = [[0.25, 0.3], [0.75, 0.3], [0.25, 0.7], [0.75, 0.7]].filter(([fx, fy]) => hiddenAt(fx, fy)).length;
+        covered = hiddenAt(0.5, 0.5) && corners >= 3;
       }
     }
     const clipped = vis.right - vis.left < 4 || vis.bottom - vis.top < Math.min(8, r.height / 2);

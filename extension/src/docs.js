@@ -108,8 +108,39 @@ function fetchDoc(url) {
   return pages.get(url);
 }
 
+/**
+ * A guessed docs URL that 404s usually has a real parent ("…/docs/storage/retention" → "…/docs/storage" →
+ * "…/docs"): walk up at most two levels, never above the docs root.
+ */
+async function fetchDocOrParent(url, failed) {
+  let u = url;
+  for (let up = 0; up <= 2; up++) {
+    try {
+      return await fetchDoc(u);
+    } catch (e) {
+      failed.push(`${shortPath(u)} (${e?.message || e})`);
+      const x = new URL(u);
+      const parts = x.pathname.replace(/\/+$/, "").split("/").filter(Boolean);
+      if (parts.length <= 2 || !/HTTP (404|410)/.test(String(e?.message))) return null; // only "not found" walks up
+      u = `${x.origin}/${parts.slice(0, -1).join("/")}`;
+    }
+  }
+  return null;
+}
+const shortPath = (u) => {
+  try {
+    const x = new URL(u);
+    return `${x.host}${x.pathname}`;
+  } catch {
+    return u;
+  }
+};
+
 /** The sections of the fetched docs most relevant to `query`, in page order, up to `max` characters. */
-function excerpt(docs, query, max, phrase = "") {
+// Passages that say how to do it in the UI ("go to the Logs Storage page", "click Edit bucket").
+const UI_STEPS = /\b(go to|click|select|open|choose|enter|in the [\w ]{0,30}console|navigation menu|menu|tab|page|panel|field|button|dialog)\b/gi;
+
+function excerpt(docs, query, max, phrase = "", { ui = false } = {}) {
   const q = queryTerms(query);
   if (!q.size) return "";
   // Rare words tell sections apart ("token", "ttl"); words in every section ("app", "check") barely count.
@@ -124,6 +155,8 @@ function excerpt(docs, query, max, phrase = "") {
     let s = 0;
     for (const w of q) s += (x.head.has(w) ? 3 : 0) * idf(w) + (x.body.has(w) ? 1 : 0) * idf(w);
     if (ph.length > 3 && `${x.c.heading} ${x.c.text}`.toLowerCase().replace(/\s+/g, " ").includes(ph)) s = s * 2 + 6;
+    // For planning, how-to-in-the-UI passages are what matter.
+    if (ui && s > 0 && (x.c.text.match(UI_STEPS) || []).length >= 3) s *= 1.6;
     if (s > 0) scored.push({ ...x, s });
   }
   scored.sort((a, b) => b.s - a.s);
@@ -142,8 +175,22 @@ function excerpt(docs, query, max, phrase = "") {
     picked.push(x);
     used += len;
   }
+  // A picked section that stops mid-thought ("…do the following:") or continues under the same heading
+  // brings its next piece along: that's where the actual steps are.
+  for (const x of [...picked]) {
+    const next = docs[x.di].chunks[x.ci + 1];
+    if (!next || picked.some((p) => p.di === x.di && p.ci === x.ci + 1)) continue;
+    if (!/:\s*$/.test(x.c.text) && next.heading !== x.c.heading) continue;
+    const len = next.heading.length + next.text.length + 6;
+    if (used + len > max * 1.25) continue; // a little over budget is worth it for the steps themselves
+    picked.push({ di: x.di, ci: x.ci + 1, c: next });
+    used += len;
+  }
   picked.sort((a, b) => a.di - b.di || a.ci - b.ci);
-  return picked.map((x) => `## ${x.c.heading}\n${x.c.text}`).join("\n\n");
+  // Continuation pieces repeat their heading; show it once.
+  return picked
+    .map((x, n) => (n > 0 && picked[n - 1].di === x.di && picked[n - 1].ci === x.ci - 1 && picked[n - 1].c.heading === x.c.heading ? x.c.text : `## ${x.c.heading}\n${x.c.text}`))
+    .join("\n\n");
 }
 
 /**
@@ -157,27 +204,31 @@ export async function docLookup({ urls = [], question, labels = [], title = "", 
   let suggested = [];
   if (suggest) {
     try {
-      suggested = (await suggestDocs({ question, title, host, labels })).urls.map(cleanUrl).filter(Boolean);
+      const sug = await suggestDocs({ question, title, host, labels });
+      suggested = [...sug.urls, sug.home].map(cleanUrl).filter(Boolean);
     } catch (e) {
       console.warn("[Waypoint] docs suggestion failed", e?.message);
     }
   }
   // Specific suggestions first, then the page's own (often general) links.
-  list = [...new Set([...suggested, ...list])].slice(0, 3);
+  list = [...new Set([...suggested, ...list])].slice(0, 4);
   if (!list.length) return { how: "none", list, suggested, needs: [] };
 
   const allowed = await Promise.all(list.map(canFetch));
-  const fetched = (
-    await Promise.all(list.map((u, i) => (allowed[i] ? fetchDoc(u).catch(() => null) : null)))
-  ).filter(Boolean);
+  const failed = [];
+  const fetchedRaw = (await Promise.all(list.map((u, i) => (allowed[i] ? fetchDocOrParent(u, failed) : null)))).filter(Boolean);
+  // Two guesses can fall back to the same parent page.
+  const fetched = [...new Map(fetchedRaw.map((d) => [d.url, d])).values()];
 
   // One hop, like a person browsing docs: follow the links on these pages whose text or path best
   // matches the question and what's on screen (e.g. the provider the user's app actually uses).
-  if (fetched.length) {
-    const q = new Set(stems(`${question} ${labels.join(" ")}`));
-    const seen = new Set([...list, ...fetched.map((d) => cleanUrl(d.url))]);
+  // Up to two rounds, two pages each (a docs home → section → the page that has the answer).
+  const q = new Set([...stems(`${question} ${labels.join(" ")}`), ...queryTerms(question)]);
+  const seen = new Set([...list, ...fetched.map((d) => cleanUrl(d.url))]);
+  let frontier = fetched.slice();
+  for (let round = 0; round < 2 && frontier.length; round++) {
     const hops = new Map();
-    for (const d of fetched)
+    for (const d of frontier)
       for (const l of d.links) {
         const u = cleanUrl(l.url);
         if (!u || seen.has(u)) continue;
@@ -185,8 +236,9 @@ export async function docLookup({ urls = [], question, labels = [], title = "", 
         if (s >= 2 && s > (hops.get(u) || 0)) hops.set(u, s);
       }
     const next = [...hops].sort((a, b) => b[1] - a[1]).slice(0, 2).map(([u]) => u);
-    const more = (await Promise.all(next.map(async (u) => ((await canFetch(u)) ? fetchDoc(u).catch(() => null) : null)))).filter(Boolean);
-    fetched.push(...more);
+    next.forEach((u) => seen.add(u));
+    frontier = (await Promise.all(next.map(async (u) => ((await canFetch(u)) ? fetchDoc(u).catch(() => null) : null)))).filter(Boolean);
+    fetched.push(...frontier);
   }
   const needs = [...new Set(list.filter((_, i) => !allowed[i]).map((u) => new URL(u).host))];
 
@@ -195,10 +247,11 @@ export async function docLookup({ urls = [], question, labels = [], title = "", 
       how: "fetched",
       list,
       suggested,
+      failed,
       needs,
       sources: fetched.map((d) => d.url),
       ms: Math.round(performance.now() - t0),
-      text: (query, max = 1600, phrase = "") => excerpt(fetched, query, max, phrase),
+      text: (query, max = 1600, phrase = "", opts = {}) => excerpt(fetched, query, max, phrase, opts),
       urlFor: (query) => {
         const q = new Set(stems(query));
         let best = fetched[0], bestS = -1;
@@ -237,7 +290,7 @@ export async function docLookup({ urls = [], question, labels = [], title = "", 
   } catch (e) {
     console.warn("[Waypoint] cloud docs read failed", e?.message);
   }
-  const r = { how: "none", list, suggested, needs, ms: Math.round(performance.now() - t0) };
+  const r = { how: "none", list, suggested, needs, failed, ms: Math.round(performance.now() - t0) };
   onLog?.(r);
   return r;
 }
