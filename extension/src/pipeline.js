@@ -38,7 +38,8 @@ function queryStems(question) {
 }
 
 function score(item, stems) {
-  let s = 0;
+  // Menus and hover-revealed controls are how hidden things are reached: keep them in the shortlist.
+  let s = /collapsed|on hover/.test(item.state || "") ? 1 : 0;
   for (const w of words(item.label)) if (stems.has(stem(w))) s += 3;
   for (const w of words(item.context)) if (stems.has(stem(w))) s += 1;
   return s;
@@ -68,7 +69,13 @@ const norm = (s) => (s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 export function exactMatch(target, items) {
   const t = norm(target);
   if (!t) return null;
-  return items.find((it) => norm(it.label) === t && !it.state.includes("disabled")) || null;
+  return items.find((it) => norm(it.label) === t && !/disabled|current|selected/.test(it.state)) || null;
+}
+
+/** The step's target is where the user already is (the current nav link or the selected tab). */
+export function alreadyHere(target, items) {
+  const t = norm(target);
+  return !!t && items.some((it) => norm(it.label) === t && /current|selected/.test(it.state));
 }
 
 /**
@@ -82,28 +89,54 @@ export function looksDone(goal, item) {
   return hit ? hit.trim() : null; // the status text that shows it, e.g. "Basic - Enforced Replay - Monitoring"
 }
 
+/**
+ * Does the label name something specific to the goal, beyond the page's own topic? ("Ask Gemini about
+ * App Check" on the App Check page shares only the page's topic with "manage App Check debug tokens".)
+ */
+export function specificToGoal(goal, label, outline) {
+  const topic = new Set(words(`${outline.title} ${outline.headings.join(" ")}`).map(stem));
+  const goalStems = [...queryStems(goal)].filter((st) => !topic.has(st));
+  const labelStems = new Set(words(label).map(stem));
+  return goalStems.some((st) => labelStems.has(st));
+}
+
 export const line = (it) =>
   [it.id, it.role, `"${it.label}"`, it.context, it.state].filter(Boolean).join(" | ");
 
 const pageHeader = (outline) =>
   `Page title: ${outline.title}\nPage path: ${outline.path}\nPage headings: ${outline.headings.join(" / ") || "(none)"}`;
 
-/** On-device first: Nano picks one id from an enum of real candidates, so it cannot invent an element. */
+/**
+ * Compact candidate lines for Nano: a context fragment shared by most candidates (e.g. every control is
+ * "under" the app's name) carries no information, so it is dropped to keep the prompt short.
+ */
+function compactLines(cands) {
+  const count = new Map();
+  for (const c of cands) for (const f of new Set((c.context || "").split("; "))) count.set(f, (count.get(f) || 0) + 1);
+  const common = new Set([...count].filter(([f, n]) => f && n > cands.length / 2).map(([f]) => f));
+  return cands.map((c) => {
+    const ctx = (c.context || "").split("; ").filter((f) => f && !common.has(f)).join("; ");
+    return [c.id, c.role, `"${c.label}"`, ctx, c.state].filter(Boolean).join(" | ");
+  });
+}
+
+/**
+ * On-device first: Nano picks one id from an enum of real candidates, so it cannot invent an element.
+ * Kept deliberately lean: Nano's time goes mostly into writing output, so it returns only an id and two
+ * flags (no free-text explanation or self-rated confidence); the bubble text comes from the label or plan.
+ */
 export async function pickElement({ question, outline, forceCloud = false }) {
-  const cands = shortlist(question, outline.items);
-  if (!cands.length) return { elementId: "none", confidence: 0, explanation: "No controls on this page.", source: "none" };
+  const cands = shortlist(question, outline.items, 30);
+  if (!cands.length) return { elementId: "none", source: "none", candidates: 0, total: 0 };
 
   const schema = {
     type: "object",
     properties: {
       elementId: { type: "string", enum: [...cands.map((c) => c.id), "none"] },
-      confidence: { type: "number" },
       completesGoal: { type: "boolean" },
-      alreadyDone: { type: "boolean" },
       opensMenu: { type: "boolean" },
-      explanation: { type: "string" },
     },
-    required: ["elementId", "confidence", "completesGoal", "alreadyDone", "opensMenu", "explanation"],
+    required: ["elementId", "completesGoal", "opensMenu"],
   };
 
   const model = getGenerativeModel(
@@ -130,15 +163,12 @@ ${pageHeader(outline)}
 
 The user wants: "${question}"
 
-Candidate controls on this page (id | role | label | context | state):
-${cands.map(line).join("\n")}
+Controls on this page (id | role | label | context | state):
+${compactLines(cands).join("\n")}
 
-Choose the single control the user should interact with NEXT to make progress on what they want. Prefer a control whose label matches the request. Controls with state "hidden" sit inside a collapsed menu; you may choose them. If the needed control is not listed but probably sits inside a collapsed menu or section (state "collapsed"), choose that collapsed control. If no candidate helps, choose "none".
-confidence: 0 to 1, how sure you are that this is the right control.
-completesGoal: true only if using this control directly accomplishes what the user wants, here on this page; false if it is only a first step that leads to another page.
-opensMenu: true if you chose a collapsed menu or section to reveal the control the user needs.
-alreadyDone: true only if the chosen control's state or row cells show the user's goal is ALREADY in place (for example a status reading "Enforced" when they want to enforce); otherwise false.
-explanation: one short sentence (max 25 words) telling the user what to do with this control and why.`;
+Choose the control the user should use NEXT. Prefer one whose label matches the request. State "current" is the page the user is already on: never choose it. State "hidden" or "on hover" controls exist but need a menu opened or the row hovered; you may choose them. If the needed control isn't listed but probably sits inside a collapsed menu (state "collapsed"), choose that menu. If nothing helps, choose "none".
+completesGoal: true only if using this control directly does what the user wants, on this page.
+opensMenu: true if you chose a collapsed menu to reveal what the user needs.`;
 
   const t0 = performance.now();
   const result = await model.generateContent(prompt);
@@ -200,6 +230,8 @@ Rules:
 - Start from the CURRENT page. At most 8 steps. Each step is one click or one field to fill.
 - "target" must be visible text in the UI: a navigation item, a tab name, a row name or a button label. When the next control is already listed above, use its label exactly.
 - Controls with state "collapsed" are menus or sections whose items are NOT listed above. Apps reorganise their navigation into such groups, so if the item you need isn't listed, open the collapsed group whose name best fits it (e.g. a "Users" page usually sits under a group like "Admin" or "People"), then continue with the item itself.
+- State "current" or "selected" marks where the user already is: never make it a step.
+- Actions on one specific item (an app, user, file, key) usually live in that item's own row menu, e.g. a "⋮", "More" or "Open menu for <item>" button, often shown only on hover. Include the step that opens it before the action itself.
 - Navigate with the app's own navigation, tabs and buttons. Don't route through a search box unless no listed control or collapsed group could lead there.
 - If a step means opening a project, use the project's name exactly as shown on its card as the target.
 - Never invent values or secrets. Stop before any final irreversible confirmation and tell the user to review it themselves.`;

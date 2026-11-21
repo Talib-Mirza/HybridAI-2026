@@ -6,6 +6,8 @@ import { fileURLToPath } from "node:url";
 const here = dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
+  // Watch builds (npm run ext:watch) also mirror full prompts into the page console for testing.
+  define: { __WAYPOINT_DEV__: JSON.stringify(process.argv.includes("--watch")) },
   root: resolve(here, "extension"),
   envDir: here, // reads VITE_APPCHECK_DEBUG_TOKEN from the gitignored .env.local
   publicDir: resolve(here, "extension/public"), // manifest, background, content script: copied as-is

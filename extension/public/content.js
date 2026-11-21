@@ -39,7 +39,8 @@
 
   const clean = (s) => (s || "").replace(/\s+/g, " ").trim();
   // Icon fonts render ligature words ("check_circle", "help"); they're noise to a model, so skip them.
-  const ICON = "mat-icon,.material-icons,.material-symbols-outlined,.google-symbols,[class*=material-icon],[data-mat-icon-name]";
+  // Icon-font ligatures ("check_circle", "plat_web") and anything marked decorative (aria-hidden) aren't label text.
+  const ICON = "mat-icon,.material-icons,.material-symbols-outlined,.google-symbols,[class*=material-icon],[class*=-icons],[data-mat-icon-name],[aria-hidden=true]";
   function textOf(el) {
     if (!el.querySelector(ICON)) return clean(el.innerText || el.textContent);
     const parts = [];
@@ -93,6 +94,17 @@
     const cs = getComputedStyle(el);
     if (cs.visibility === "hidden" || cs.display === "none" || Number(cs.opacity) === 0) return false;
     return true;
+  }
+
+  // Row actions (⋮, edit, delete) are often collapsed to ~0 px or transparent until the row is hovered.
+  // Such a control still counts when its row is visible; the ring sits on the row until it appears.
+  const HOVER_HOST = "tbody tr,[role=row],mat-row,li,[role=listitem],[role=treeitem],mat-list-item";
+  const hoverOf = new WeakMap();
+  function hoverHostFor(el) {
+    // No layout boxes means it (or an ancestor) is display:none, i.e. not a hover reveal.
+    if (el.closest("[aria-hidden=true],[inert]") || el.getClientRects().length === 0) return null;
+    const host = parentOf(el)?.closest?.(HOVER_HOST);
+    return host && isVisible(host) ? host : null;
   }
 
   function roleOf(el) {
@@ -214,6 +226,26 @@
     return null;
   }
 
+  // "You are here": the link whose address is the longest prefix of the current path is the current
+  // section (e.g. "App Check" while on .../appcheck/apps), even when the app doesn't set aria-current.
+  function markCurrentSection(items) {
+    const here = location.pathname.replace(/\/+$/, "");
+    let best = 0;
+    const scored = [];
+    for (const it of items) {
+      const el = idToEl.get(it.id);
+      if (!el || el.tagName !== "A" || !el.href) continue;
+      let u;
+      try { u = new URL(el.href, location.href); } catch { continue; }
+      const p = u.pathname.replace(/\/+$/, "");
+      if (u.origin !== location.origin || p.length < 2 || !(here === p || here.startsWith(p + "/"))) continue;
+      scored.push([it, p.length]);
+      best = Math.max(best, p.length);
+    }
+    for (const [it, len] of scored)
+      if (len === best && !it.state.includes("current")) it.state = [it.state, "current"].filter(Boolean).join(",");
+  }
+
   function buildOutline() {
     idToEl = new Map();
     const ids = new Map();
@@ -235,9 +267,10 @@
       if (seen.has(el)) continue;
       seen.add(el);
       const visible = isVisible(el);
-      // Hidden controls count only when a visible collapsed menu reveals them.
+      // Hidden controls count only when a visible collapsed menu reveals them, or hovering their row does.
       const expander = visible || hiddenCount >= 80 ? null : expanderFor(el);
-      if (!visible && !expander) continue;
+      const hoverHost = visible || expander || hiddenCount >= 80 ? null : hoverHostFor(el);
+      if (!visible && !expander && !hoverHost) continue;
       const label = labelOf(el);
       if (!label) continue;
       // Drop a control nested inside another candidate with the same label (e.g. span inside button).
@@ -256,6 +289,19 @@
         });
         continue;
       }
+      if (hoverHost) {
+        hiddenCount++;
+        hoverOf.set(el, hoverHost);
+        items.push({
+          id,
+          role: roleOf(el),
+          label: redact(label),
+          context: redact(contextOf(el)),
+          state: [stateOf(el), "on hover"].filter(Boolean).join(","),
+          hover: redact(labelOf(hoverHost)).slice(0, 60),
+        });
+        continue;
+      }
       const r = el.getBoundingClientRect();
       items.push({
         id,
@@ -266,6 +312,7 @@
         offscreen: r.bottom < 0 || r.top > innerHeight,
       });
     }
+    markCurrentSection(items);
     const headings = deepQueryAll(document, "h1,h2,[role=heading]")
       .filter(isVisible)
       .map(textOf)
@@ -315,7 +362,9 @@
       hide();
       return;
     }
-    const r = target.getBoundingClientRect();
+    let r = target.getBoundingClientRect();
+    const host = hoverOf.get(target);
+    if (host && (r.width < 4 || r.height < 4 || !isVisible(target))) r = host.getBoundingClientRect();
     const pad = 4;
     Object.assign(ring.style, {
       left: `${r.left - pad}px`, top: `${r.top - pad}px`,
@@ -340,7 +389,7 @@
     shadow.querySelector(".src").textContent = src || "";
     ring.style.display = "block";
     bubble.style.display = "block";
-    const r = el.getBoundingClientRect();
+    const r = (isVisible(el) ? el : hoverOf.get(el) || el).getBoundingClientRect();
     if (r.top < 0 || r.bottom > innerHeight) el.scrollIntoView({ block: "center", behavior: "smooth" });
     cancelAnimationFrame(raf);
     place();
@@ -392,7 +441,8 @@
         break;
       case "check": {
         const el = idToEl.get(msg.id);
-        reply({ ok: !!el && isVisible(el) });
+        const host = el && hoverOf.get(el);
+        reply({ ok: !!el && (isVisible(el) || (!!host && isVisible(host))) });
         break;
       }
       case "show": {
