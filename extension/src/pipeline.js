@@ -101,6 +101,25 @@ export function exactMatch(target, items, kind = null) {
   return hits.find((it) => it.main) || hits[0] || null;
 }
 
+/**
+ * Near-exact match, still no AI: a visible label whose words are all in the planned target (the plan
+ * said "Open menu for X Web App", the button says "Open menu for X"), at least two words and most of the
+ * target. Ties go to the longest label.
+ */
+export function closeMatch(target, items, kind = null) {
+  const t = norm(target).split(" ").filter(Boolean);
+  if (t.length < 2) return null;
+  const want = new Set(t);
+  let best = null;
+  for (const it of items) {
+    if (/disabled|current|selected/.test(it.state) || !kindFits(kind, it)) continue;
+    const l = norm(it.label).split(" ").filter(Boolean);
+    if (l.length < 2 || !l.every((w) => want.has(w)) || l.length / t.length < 0.6) continue;
+    if (!best || l.length > norm(best.label).split(" ").length || (l.length === norm(best.label).split(" ").length && it.main && !best.main)) best = it;
+  }
+  return best;
+}
+
 /** The step's target is where the user already is (the current nav link or the selected tab). */
 export function alreadyHere(target, items) {
   const t = norm(target);
@@ -245,7 +264,7 @@ function extractJson(text) {
  * goal and the current page's redacted outline. When a step can't be found, it is called again with the
  * steps already done and the missing target, so it re-plans from what is actually on screen.
  */
-export async function planRoute({ goal, outline, done = [], failed = null, unfinished = false, vanished = false }) {
+export async function planRoute({ goal, outline, done = [], failed = null, unfinished = false, vanished = false, docs = "" }) {
   // Navigation and menu toggles first: they carry the app's structure, which is what a route needs.
   const isNav = (it) => /collapsed|expanded|hidden/.test(it.state) || /navigation/.test(it.context);
   const nav = [...outline.items.filter(isNav), ...outline.items.filter((it) => !isNav(it))]
@@ -270,8 +289,12 @@ The user is currently on:
 ${pageHeader(outline)}
 Visible controls on this page (role | label | context | state; personal values are redacted):
 ${nav.join("\n")}
-${replan}
-
+${replan}${docs ? `
+From the app's official documentation (more current than your memory: follow it for where settings live and what they're called):
+"""
+${docs}
+"""
+` : ""}
 Return the steps as JSON: each step has "instruction" (short imperative sentence for the user), "target" (the control's visible label exactly as it appears on screen), "kind" (navigation = an item in the app's sidebar or top menu; tab = a tab on the page; button; row = a row in a table or list; menu item = an option inside a menu that a previous step opened; field = something to type in or toggle) and "where" (where on screen it is).
 
 Example of a complete route in a DIFFERENT app (goal "invite a teammate to my workspace", starting on the dashboard, where the left navigation has collapsed sections "Workspace" and "Billing"):
@@ -454,7 +477,7 @@ const unplaceholder = (t) =>
     .replace(/\[name\]/gi, "the account holder")
     .replace(/\[(?:number|uuid|token|api-key|app-id)\]/gi, "the ID");
 
-export async function explainControl({ question, outline, item, detail = {}, onText }) {
+export async function explainControl({ question, outline, item, detail = {}, docs = "", onText }) {
   const base = `You are Waypoint, explaining a web app's UI to a developer.
 ${pageHeader(outline)}
 
@@ -464,9 +487,13 @@ Explain this control:
 - label: "${item.label}"
 - type: ${item.role}${item.state ? `\n- state: ${item.state}` : ""}${item.context ? `\n- context: ${item.context}` : ""}`;
   const local = `${base}${detail.hint ? `\n- tooltip / description: ${detail.hint}` : ""}${detail.nearby ? `\n- text next to it on the page: "${detail.nearby}"` : ""}`;
+  // Public docs text: fine for either model.
+  const docsBlock = docs
+    ? `\n\nFrom the app's official documentation (use it for what the control does and why it matters; use the page only for its current state):\n"""\n${docs}\n"""`
+    : "";
   const rules = `
 
-Write 1 or 2 short sentences, at most 40 words: what it does and when or why someone would use it. If it's a setting, status or table row, say what its current state or values mean. Start with a verb or the point itself (e.g. "Opens…", "Shows…", "Requires…"), not with the control's name. Be direct and confident; only hedge if the page gives no clue at all. Text in [brackets] was redacted for privacy: refer to it generically ("your project", "this app"). Plain text only, no markdown.`;
+Write 1 or 2 short sentences, at most ${docs ? 55 : 40} words: what it does and when or why someone would use it${docs ? ", grounded in the documentation above (a key detail, limit or trade-off it states is worth including)" : ""}. If it's a setting, status or table row, say what its current state or values mean. Start with a verb or the point itself (e.g. "Opens…", "Shows…", "Requires…"), not with the control's name. Be direct and confident; only hedge if the page gives no clue at all. Text in [brackets] was redacted for privacy: refer to it generically ("your project", "this app"). Plain text only, no markdown.`;
 
   const run = async (mode, prompt) => {
     const model = getGenerativeModel(
@@ -496,10 +523,10 @@ Write 1 or 2 short sentences, at most 40 words: what it does and when or why som
   };
 
   try {
-    return await run(InferenceMode.ONLY_ON_DEVICE, local + rules);
+    return await run(InferenceMode.ONLY_ON_DEVICE, local + docsBlock + rules);
   } catch (e) {
     console.warn("[Waypoint] on-device explanation unavailable, using cloud with less context:", e?.message);
-    return await run(InferenceMode.ONLY_IN_CLOUD, base + rules);
+    return await run(InferenceMode.ONLY_IN_CLOUD, base + docsBlock + rules);
   }
 }
 
@@ -559,4 +586,75 @@ Choose the mode.`;
   const r = (await model.generateContent(prompt)).response;
   const mode = JSON.parse(r.text()).mode === "explain" ? "explain" : "guide";
   return { mode, source: r.inferenceSource, ms: Math.round(performance.now() - t0), sent: prompt };
+}
+
+// ---------- Documentation ----------
+// Waypoint grounds explanations and re-plans in the app's own docs. URLs come from the page's own
+// "Learn more" / docs links, or (when there are none) from cloud Gemini's suggestion of the official docs
+// page, which only counts if it actually loads. Cloud Gemini reads the pages with the URL context tool and
+// returns the relevant facts; it gets the URLs, the page title, the user's request and control labels
+// (already redacted), never the page's text or values.
+
+/** Cloud Gemini reads docs pages (URL context tool) and pulls out what matters for this request. */
+export async function readDocs({ urls, question, title = "", labels = [] }) {
+  const model = getGenerativeModel(
+    ai,
+    {
+      mode: InferenceMode.ONLY_IN_CLOUD,
+      inCloudParams: { model: CLOUD_MODEL, tools: [{ urlContext: {} }], generationConfig: { temperature: 0 } },
+    },
+    { timeout: 30_000 }
+  );
+  const prompt = `Read these official documentation pages:
+${urls.map((u) => `- ${u}`).join("\n")}
+
+A user of this web app is on the page "${title}" and asked: "${question}"
+${labels.length ? `Controls they're looking at: ${labels.map((l) => `"${l}"`).join(", ")}\n` : ""}
+Using ONLY what these pages say, return JSON:
+{"uiPath": "where in the app's UI this is done, as the exact menu / tab / button names in order (empty if the docs don't say)",
+ "notes": [{"label": "<one of the controls above, exactly>", "note": "<what the docs say it does or means, max 40 words>"}],
+ "summary": "<the 1-3 facts from the docs most useful for this request, max 70 words>"}
+Leave out anything the pages don't cover. No markdown.`;
+  const t0 = performance.now();
+  const r = (await model.generateContent(prompt)).response;
+  const meta = r.candidates?.[0]?.urlContextMetadata?.urlMetadata || [];
+  const read = meta.filter((m) => /SUCCESS/i.test(m.urlRetrievalStatus || "")).map((m) => m.retrievedUrl);
+  let data = {};
+  try {
+    data = extractJson(r.text());
+  } catch {}
+  return {
+    uiPath: (data.uiPath || "").trim(),
+    notes: Array.isArray(data.notes) ? data.notes.filter((n) => n?.label && n?.note) : [],
+    summary: (data.summary || "").trim(),
+    read,
+    tried: urls,
+    raw: r.text().slice(0, 600),
+    meta: JSON.stringify(r.candidates?.[0]?.urlContextMetadata || null).slice(0, 400),
+    ms: Math.round(performance.now() - t0),
+    sent: prompt,
+  };
+}
+
+/** No docs link on the page: ask cloud Gemini for the official docs URLs (they're verified by reading). */
+export async function suggestDocs({ question, title = "", host = "", labels = [] }) {
+  const schema = {
+    type: "object",
+    properties: { urls: { type: "array", items: { type: "string" }, maxItems: 3 } },
+    required: ["urls"],
+  };
+  const model = getGenerativeModel(
+    ai,
+    {
+      mode: InferenceMode.ONLY_IN_CLOUD,
+      inCloudParams: { model: CLOUD_MODEL, generationConfig: { temperature: 0, responseMimeType: "application/json", responseJsonSchema: schema } },
+    },
+    { timeout: 15_000 }
+  );
+  const prompt = `A user of the web app at ${host} (page "${title}") asked: "${question}"
+${labels.length ? `Related controls on their screen: ${labels.slice(0, 12).map((l) => `"${l}"`).join(", ")}\n` : ""}Give up to 3 URLs of the app's OFFICIAL documentation pages that explain this, most specific first. Only real pages on the vendor's own docs site; no blogs, forums or videos.`;
+  const t0 = performance.now();
+  const r = (await model.generateContent(prompt)).response;
+  const urls = (JSON.parse(r.text()).urls || []).filter((u) => /^https:\/\//.test(u)).slice(0, 3);
+  return { urls, ms: Math.round(performance.now() - t0), sent: prompt };
 }

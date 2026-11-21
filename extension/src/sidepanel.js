@@ -1,5 +1,6 @@
 import "./sidepanel.css";
-import { pickElement, planRoute, hasKeywordHit, exactMatch, kindFits, alreadyHere, looksDone, specificToGoal, namesNavTarget, navTarget, looksLikeExplain, pickTour, explainControl, chooseMode } from "./pipeline.js";
+import { docLookup, clearDocsCache } from "./docs.js";
+import { pickElement, planRoute, hasKeywordHit, exactMatch, closeMatch, kindFits, alreadyHere, looksDone, specificToGoal, namesNavTarget, navTarget, looksLikeExplain, pickTour, explainControl, chooseMode, readDocs, suggestDocs } from "./pipeline.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -173,6 +174,80 @@ function renderSteps() {
   });
 }
 
+// ---------- Documentation ----------
+// Docs are looked up alongside the AI work (not after it): the page's own docs links, else Gemini's
+// suggestion of the official pages, read by Waypoint itself (fetch) or by cloud Gemini (URL context).
+
+const withTimeout = (p, ms) => (p ? Promise.race([p, new Promise((r) => setTimeout(() => r(null), ms))]) : Promise.resolve(null));
+const shortUrl = (u) => {
+  try {
+    const x = new URL(u);
+    return `${x.host}${x.pathname}`;
+  } catch {
+    return u;
+  }
+};
+
+function lookupDocs({ question, tabId, outline, labels = [], nearLinks = [] }) {
+  return (async () => {
+    const pageLinks = (await send(tabId, { type: "doclinks" }).catch(() => [])) || [];
+    let host = "";
+    try {
+      host = new URL((await chrome.tabs.get(tabId)).url).host;
+    } catch {}
+    const d = await docLookup({
+      urls: [...nearLinks, ...pageLinks.map((l) => l.href)],
+      question,
+      labels,
+      title: outline?.title || "",
+      host,
+      suggest: true,
+    });
+    log({
+      kind: d.how === "cloud" ? "in_cloud" : "info",
+      title:
+        d.how === "fetched"
+          ? `Docs: read ${d.sources.length} page${d.sources.length === 1 ? "" : "s"}`
+          : d.how === "cloud"
+            ? "Docs: read by cloud Gemini (URL context)"
+            : "Docs: none could be read",
+      detail: [
+        d.sources?.length ? d.sources.map(shortUrl).join(" · ") : "",
+        d.suggested?.length ? `Gemini suggested ${d.suggested.map(shortUrl).join(", ")}` : "",
+        d.how === "fetched" ? "Fetched by Waypoint; relevant sections go to the AI." : "",
+      ]
+        .filter(Boolean)
+        .join(" · "),
+      sent: d.sent,
+      ms: d.ms,
+    });
+    offerDocsPermission(d);
+    return d;
+  })().catch((e) => {
+    console.warn("[Waypoint] docs lookup failed", e);
+    return { how: "none" };
+  });
+}
+
+/** Docs Waypoint wasn't allowed to fetch: offer a one-click grant for those docs sites. */
+let docsNeeded = [];
+function offerDocsPermission(d) {
+  docsNeeded = d && d.how !== "fetched" ? d.needs || [] : [];
+  $("docs-allow").hidden = !docsNeeded.length;
+  if (docsNeeded.length) $("docs-allow-text").textContent = `Read the official docs on ${docsNeeded.join(", ")} for better answers?`;
+}
+$("docs-allow-btn").addEventListener("click", () => {
+  const origins = docsNeeded.map((h) => `https://${h}/*`);
+  chrome.permissions.request({ origins }).then((ok) => {
+    if (ok) {
+      clearDocsCache();
+      $("docs-allow").hidden = true;
+    }
+  });
+});
+
+const docsTextFor = (d, query, max = 1800, phrase = "") => (!d || d.how === "none" ? "" : d.text(query, max, phrase) || "");
+
 // ---------- Core flow ----------
 
 const MAX_AUTO_REPLANS = 2;
@@ -200,6 +275,7 @@ async function show(where, bubble) {
   await send(state.tabId, {
     type: "show",
     id: where.showId,
+    docUrl: state.mode === "route" ? state.docUrl : undefined,
     ...bubble,
     text: where.reveal ? where.revealText : bubble.text,
     why: where.reveal ? bubble.text : where.hoverHint || bubble.why,
@@ -254,7 +330,7 @@ async function reportDone(item, where) {
 
 async function ask(question, tabId) {
   const gen = ++state.gen;
-  Object.assign(state, { tabId, mode: "idle", goal: question, steps: [], i: 0, replans: 0, revealing: false, single: null, recover: null });
+  Object.assign(state, { tabId, mode: "idle", goal: question, steps: [], i: 0, replans: 0, revealing: false, single: null, recover: null, docsP: null, docUrl: null });
   setPaused(false);
   renderSteps();
   $("replan").hidden = true;
@@ -281,6 +357,8 @@ async function ask(question, tabId) {
         return;
       }
     }
+    // Docs lookup runs while Nano reads the page; the planner uses it if a route is needed.
+    state.docsP = lookupDocs({ question, tabId, outline: first });
     const res = await locate(question, gen);
     if (!res) return;
     const { pick } = res;
@@ -331,13 +409,19 @@ async function escalate(goal, outline, gen, { pick = null, failed = null, unfini
   });
   status(failed ? "Re-planning from this page with cloud Gemini…" : "Planning the route with cloud Gemini…");
   busy(failed || unfinished ? "Re-planning from here…" : "Planning your route…");
-  const plan = await planRoute({ goal, outline, done, failed, unfinished, vanished });
+  // Initial plans wait briefly for the docs (usually ready by now); re-plans wait longer, since a re-plan
+  // means the model's memory of this app was wrong.
+  const docs = await withTimeout(state.docsP, failed || unfinished ? 6000 : 2500);
+  if (gen !== state.gen) return;
+  const docsText = docsTextFor(docs, goal, 1800);
+  if (docsText) state.docUrl = docs.urlFor(goal);
+  const plan = await planRoute({ goal, outline, done, failed, unfinished, vanished, docs: docsText });
   state.recover = vanished ? failed : null;
   if (gen !== state.gen) return;
   log({
     kind: "in_cloud",
     title: `Route ${failed || unfinished ? "re-planned" : "planned"} (${plan.steps.length} steps)`,
-    detail: `${plan.model}${plan.grounded ? " · grounded with Google Search" : ""} · ${plan.steps.map((s) => `${s.target}${s.kind ? ` (${s.kind})` : ""}`).join(" → ")}`,
+    detail: `${plan.model}${docsText ? " · grounded in the docs" : ""} · ${plan.steps.map((s) => `${s.target}${s.kind ? ` (${s.kind})` : ""}`).join(" → ")}`,
     sent: plan.sent,
     ms: plan.ms,
   });
@@ -417,7 +501,7 @@ async function runStep(gen, attempt, run) {
     const skippable = (st) => !st.kind || /^(navigation|tab|menu item)$/.test(st.kind);
     for (let j = state.i; j <= Math.min(state.i + 2, state.steps.length - 1); j++) {
       if (j > state.i && !skippable(state.steps[j - 1])) break;
-      const hit = exactMatch(state.steps[j].target, outline.items, state.steps[j].kind);
+      const hit = exactMatch(state.steps[j].target, outline.items, state.steps[j].kind) || closeMatch(state.steps[j].target, outline.items, state.steps[j].kind);
       if (!hit) continue;
       if (hit.state.includes("expanded") && j < state.steps.length - 1) continue; // already open
       const where = placement(outline, hit.id);
@@ -563,6 +647,15 @@ async function explain(question, tabId) {
       items: pick.items.map((it, k) => ({ ...it, detail: details[k] || {}, text: "", started: false, done: false, source: null })),
     };
     state.steps = state.tour.items.map((it) => ({ target: it.label, instruction: it.label }));
+    const t = state.tour;
+    t.docsP = lookupDocs({
+      question,
+      tabId,
+      outline,
+      labels: t.items.map((it) => it.label),
+      nearLinks: t.items.map((it) => it.detail?.docHref).filter(Boolean),
+    });
+    t.docsP.then((d) => (t.docs = d));
     await showTourItem(0, 1);
     runExplainer(gen);
   } catch (e) {
@@ -575,12 +668,18 @@ async function explain(question, tabId) {
 /** Writes explanations one at a time: the one on screen first, then the ones after it, then the rest. */
 async function runExplainer(gen) {
   const t = state.tour;
+  // The first explanation waits (up to 6 s) for the docs, so every stop can be grounded in them.
+  await withTimeout(t.docsP, 6000);
+  if (gen !== state.gen) return;
+  if (t.docs === undefined) t.docs = null;
   while (gen === state.gen && state.tour === t) {
     let k = t.items.findIndex((it, n) => n >= t.idx && !it.started && !it.missing);
     if (k < 0) k = t.items.findIndex((it) => !it.started && !it.missing);
     if (k < 0) return;
     const it = t.items[k];
     it.started = true;
+    const docs = t.docs?.how === "cloud" ? docsTextFor(t.docs, it.label) : docsTextFor(t.docs, `${it.label} ${state.goal}`, 1100, it.label);
+    it.docUrl = docs ? t.docs.urlFor(it.label) : null;
     let last = 0;
     const push = (final) => {
       if (gen !== state.gen || t.idx !== k || state.paused) return;
@@ -590,6 +689,7 @@ async function runExplainer(gen) {
         loading: !it.text,
         streaming: !final,
         src: final ? SOURCE_LABEL[it.source] : "",
+        docUrl: final ? it.docUrl : null,
       }).catch(() => {});
     };
     try {
@@ -598,6 +698,7 @@ async function runExplainer(gen) {
         outline: t.outline,
         item: it,
         detail: it.detail,
+        docs,
         onText: (txt) => {
           it.text = txt;
           if (performance.now() - last > 60) {
@@ -638,7 +739,13 @@ async function showTourItem(k, dir = 1) {
     title: it.label.replace(/^(?:selected|current|active)\s+(?:tab|item|page)\s*[:,-]\s*/i, ""),
     text: it.text,
     loading: !it.text,
-    loadingText: nanoReady ? "Gemini Nano is writing this on your device…" : "Writing an explanation…",
+    loadingText:
+      t.docs === undefined && t.docsP
+        ? "Reading the official docs…"
+        : nanoReady
+          ? "Gemini Nano is writing this on your device…"
+          : "Writing an explanation…",
+    docUrl: it.done ? it.docUrl : null,
     streaming: !it.done && !!it.text,
     src: it.done ? SOURCE_LABEL[it.source] || "" : "",
     back: hasBack,
@@ -829,6 +936,24 @@ $("replan").addEventListener("click", async () => {
 let lastCommand = { key: "", at: 0 };
 chrome.runtime.onMessage.addListener((msg, sender) => {
   const fromTab = sender.tab?.id;
+  // Dev-only test hook for the docs layer: window.postMessage({ __waypoint: "debug-docs", q: JSON.stringify({...}) }).
+  if (__WAYPOINT_DEV__ && msg.type === "page-command" && msg.command === "debug-docs") {
+    const { urls = [], question = "", title = "", labels = [], suggest = true } = JSON.parse(msg.q || "{}");
+    (async () => {
+      try {
+        const host = new URL(sender.tab.url).host;
+        const d = await docLookup({ urls, question, title, labels, host, suggest });
+        const perms = (await chrome.permissions.getAll()).origins;
+        send(fromTab, {
+          type: "debug",
+          text: `docs ↓ ${JSON.stringify({ how: d.how, list: d.list, needs: d.needs, sources: d.sources, ms: d.ms, perms, text: d.text ? d.text(question, 900) : "" })}`,
+        });
+      } catch (e) {
+        send(fromTab, { type: "debug", text: `docs error: ${e?.message || e}` });
+      }
+    })();
+    return;
+  }
   if (msg.type === "page-command" && msg.command === "ask" && msg.q) {
     // Stale content-script copies forward the same command too; take the first.
     const key = `${fromTab}|${msg.q}`;

@@ -360,6 +360,48 @@
     };
   }
 
+  // ---------- Docs links ----------
+  // The page's own pointers to documentation ("Learn more", "View docs", links into /docs/…): the most
+  // reliable way to find the right docs for what's on screen, on any site.
+  const DOC_TEXT = /\b(learn more|read more|docs?|documentation|guide|reference|help (center|article))\b/i;
+  const DOC_HREF = /\/(docs?|documentation|guides?|reference|help|support|kb)\/|^https?:\/\/(docs|developers?|support|help|learn)\./i;
+  function docHref(a) {
+    const raw = a.getAttribute("href");
+    if (!raw || /^(javascript:|mailto:|#)/i.test(raw)) return null;
+    let u;
+    try { u = new URL(raw, location.href); } catch { return null; }
+    if (!/^https?:$/.test(u.protocol)) return null;
+    const text = `${a.textContent || ""} ${a.getAttribute("aria-label") || ""}`;
+    if (!DOC_TEXT.test(text) && !DOC_HREF.test(u.href)) return null;
+    if (u.origin === location.origin && !DOC_HREF.test(u.href)) return null; // an in-app link, not docs
+    return `${u.origin}${u.pathname}`;
+  }
+  /** Docs links on the page: main content first, then the rest; deduplicated. */
+  function pageDocLinks() {
+    const out = new Map();
+    const anchors = deepQueryAll(document, "a[href]");
+    for (const pass of [true, false])
+      for (const a of anchors) {
+        if (inMain(a) !== pass) continue;
+        const h = docHref(a);
+        if (h && !out.has(h)) out.set(h, clean(a.textContent || a.getAttribute("aria-label") || "").slice(0, 80));
+      }
+    return [...out].slice(0, 8).map(([href, text]) => ({ href, text }));
+  }
+  /** The docs link closest to a control (in its row, card or section), if any. */
+  function nearDocLink(el) {
+    let n = el;
+    for (let k = 0; k < 6 && n; k++) {
+      n = parentOf(n);
+      if (!n || n === document.body) break;
+      for (const a of n.querySelectorAll?.("a[href]") || []) {
+        const h = docHref(a);
+        if (h) return h;
+      }
+    }
+    return null;
+  }
+
   /**
    * What the page says around a control, for explaining it: its tooltip/description, and the nearest
    * surrounding text (form hint, row cells, card copy). Redacted; only ever sent to on-device Nano.
@@ -383,7 +425,7 @@
       }
     }
     if (nearby && label) nearby = nearby.split(label).join(" ").replace(/\s+/g, " ").trim();
-    return { hint: redact(hint).slice(0, 200), nearby: redact(nearby).slice(0, 320) };
+    return { hint: redact(hint).slice(0, 200), nearby: redact(nearby).slice(0, 320), docHref: nearDocLink(el) };
   }
 
   // ---------- Overlay ----------
@@ -407,6 +449,11 @@
       .bubble .why:empty,.bubble .text:empty{display:none}
       .bubble .src{color:#7f8bb0;font-size:10.5px;margin-top:8px}
       .bubble .src:empty{display:none}
+      .bubble .doc{color:#9fb3ff;font-size:11px;margin-left:8px;text-decoration:none;border-bottom:1px dotted #9fb3ff}
+      .bubble .doc:hover{color:#c9d6ff}
+      .bubble .doc[hidden]{display:none}
+      .bubble .foot{display:flex;align-items:baseline;margin-top:8px}
+      .bubble .foot .src{margin-top:0}
       .bubble.explain{max-width:340px}
       .bubble .title{font-weight:650;font-size:14px;margin-bottom:4px;padding-right:18px}
       .bubble .title:empty{display:none}
@@ -457,7 +504,7 @@
         </svg>
         <span class="scroll-text"></span><button class="btn show-me">Show me</button></div>
       <div class="nav"><button class="btn ghost back">← Back</button><button class="btn next">Next →</button></div>
-      <div class="src"></div><div class="arrow"></div>
+      <div class="foot"><div class="src"></div><a class="doc" target="_blank" rel="noopener noreferrer" hidden>Docs ↗</a></div><div class="arrow"></div>
     </div>
     <div class="pill" role="status" aria-live="polite"><span class="dot"></span><span class="pill-text"></span>
       <span class="acts"><button class="btn resume">Resume</button><button class="btn ghost end">End</button></span></div>`;
@@ -659,7 +706,7 @@
     anchorBubble(vis);
   }
 
-  function show(el, { step, text, why, src, mode, title, loading, loadingText, streaming, back, next, nextLabel }) {
+  function show(el, { step, text, why, src, mode, title, loading, loadingText, streaming, back, next, nextLabel, docUrl }) {
     target = el;
     lostSince = 0;
     covered = false;
@@ -673,7 +720,7 @@
     $s(".loading-text").textContent = loadingText || "Writing…";
     $s(".back").hidden = !back;
     $s(".next").textContent = nextLabel || (next ? "Next →" : "Done");
-    update({ text, src, loading, streaming });
+    update({ text, src, loading, streaming, docUrl });
     ring.style.display = "block";
     bubble.style.display = "block";
     const vis = isVisible(el) ? el : hoverOf.get(el) || el;
@@ -685,9 +732,15 @@
   }
 
   /** Streamed text for the bubble that's showing (explain mode). */
-  function update({ text, src, loading, streaming }) {
+  function update({ text, src, loading, streaming, docUrl }) {
     $s(".text").textContent = text || "";
     $s(".src").textContent = src || "";
+    const doc = $s(".doc");
+    doc.hidden = !docUrl;
+    if (docUrl) {
+      doc.href = docUrl;
+      doc.title = `Source: ${docUrl}`;
+    }
     bubble.classList.toggle("loading", !!loading);
     bubble.classList.toggle("streaming", !!streaming);
   }
@@ -761,6 +814,9 @@
       case "hide":
         hide();
         reply({ ok: true });
+        break;
+      case "doclinks":
+        reply(pageDocLinks());
         break;
       case "describe":
         reply((msg.ids || []).map((id) => {
