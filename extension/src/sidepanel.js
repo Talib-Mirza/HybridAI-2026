@@ -400,8 +400,13 @@ async function runStep(gen, attempt, run) {
 
     // Backtrack, no AI: a menu or drawer an earlier step opened has closed again (the user clicked away),
     // so the current step's control is gone. Point back at that toggle instead of re-planning.
+    // Only while the user is still on the page where those steps were done: after a step navigates
+    // (e.g. "Cloud Run" opened the Cloud Run page) the header's menu being collapsed again is normal,
+    // not a reason to go back.
     for (let j = state.i - 1; j >= Math.max(0, state.i - 3); j--) {
       const prev = state.steps[j];
+      const samePage = state.steps.slice(j, state.i).every((s) => s.donePath === outline.path);
+      if (!samePage) break;
       const hit = exactMatch(prev.shown || prev.target, outline.items);
       if (!hit || !hit.state.includes("collapsed")) continue;
       const where = placement(outline, hit.id);
@@ -560,6 +565,7 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
       if (state.mode === "route") scheduleStep(600);
       else if (state.mode === "single") setTimeout(() => ask(state.goal, state.tabId), 600);
     } else if (state.mode === "route") {
+      if (state.steps[state.i]) state.steps[state.i].donePath = msg.path;
       state.i += 1;
       busy("Finding the next step…");
       scheduleStep(800);
@@ -568,8 +574,8 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
       chip("done", "Done");
       status("Done.");
     }
-  } else if (msg.type === "url-changed" && state.mode === "route" && !state.paused) {
-    scheduleStep(900);
+  } else if ((msg.type === "url-changed" || msg.type === "page-ready") && state.mode === "route" && !state.paused) {
+    scheduleStep(msg.type === "page-ready" ? 300 : 900);
   } else if (msg.type === "target-lost" && !state.paused) {
     // The highlighted control vanished (re-render, closed drawer, navigation): find it again.
     if (state.mode === "route") {

@@ -59,6 +59,8 @@
       location.search.match(/[?&](?:project|projectId|org|organization|workspace)=([^&#]+)/i);
     return m ? decodeURIComponent(m[1]) : null;
   }
+  // Same form as outline.path, so the panel can tell whether the user is still on the same page.
+  const pagePath = () => redact(location.pathname + location.hash);
   const escapeRe = (t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
   // Redaction: everything that leaves the device passes through this. Values are never read at all.
@@ -283,7 +285,8 @@
       seen.add(el);
       const visible = isVisible(el);
       // Hidden controls count only when a visible collapsed menu reveals them, or hovering their row does.
-      const expander = visible || hiddenCount >= 80 ? null : expanderFor(el);
+      let expander = visible || hiddenCount >= 80 ? null : expanderFor(el);
+      if (expander && !labelOf(expander)) expander = null; // an unnamed toggle can't be pointed out to the user
       const hoverHost = visible || expander || hiddenCount >= 80 ? null : hoverHostFor(el);
       if (!visible && !expander && !hoverHost) continue;
       const label = labelOf(el);
@@ -604,11 +607,15 @@
     (e) => {
       if (target && e.composedPath().includes(target)) {
         hide(); // clicked: the step is done, so its control disappearing next is expected, not "lost"
-        safeSend({ type: "target-clicked" });
+        safeSend({ type: "target-clicked", path: pagePath() });
       }
     },
     true
   );
+
+  // A full page load (not a re-injection from the panel): tell the panel, so a route in progress
+  // continues on the new page. (Single-page apps navigate without loads; see the URL watcher below.)
+  if (!window.__waypointInjected) safeSend({ type: "page-ready", path: pagePath() });
 
   // SPA navigation: single-page apps change views without page loads.
   let lastHref = location.href;
