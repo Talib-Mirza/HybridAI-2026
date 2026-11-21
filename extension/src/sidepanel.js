@@ -15,6 +15,7 @@ const state = {
   revealing: false, // the bubble is on a menu toggle; clicking it re-searches instead of advancing
   paused: false, // the user paused the guide (×); nothing shows until they resume
   single: null, // single-page answer: { label, bubble } so it can be found again / resumed
+  recover: null, // label of a step's control that vanished (drawer closed); jump to it once it's back
 };
 
 let stepTimer = 0;
@@ -248,7 +249,7 @@ async function reportDone(item, where) {
 
 async function ask(question, tabId) {
   const gen = ++state.gen;
-  Object.assign(state, { tabId, mode: "idle", goal: question, steps: [], i: 0, replans: 0, revealing: false, single: null });
+  Object.assign(state, { tabId, mode: "idle", goal: question, steps: [], i: 0, replans: 0, revealing: false, single: null, recover: null });
   setPaused(false);
   renderSteps();
   $("replan").hidden = true;
@@ -269,7 +270,7 @@ async function ask(question, tabId) {
         log({ kind: "info", title: `Exact match: "${navHit.label}"`, detail: "Found by label, no AI call needed." });
         state.mode = "single";
         const bubble = { step: "Here", text: where.reveal ? "" : `Use "${navHit.label}".` };
-        state.single = { label: navHit.label, bubble };
+        state.single = { label: navHit.label, bubble, path: first.path };
         await show(where, bubble);
         status(where.reveal ? "It's inside a collapsed menu on this page." : "Found it on this page.");
         return;
@@ -293,7 +294,7 @@ async function ask(question, tabId) {
       // The goal is on this page (possibly inside a collapsed menu): no route needed.
       state.mode = "single";
       const bubble = { step: "Here", text: res.where.reveal ? "" : `Use "${label}".`, src: SOURCE_LABEL[pick.source] };
-      state.single = { label, bubble };
+      state.single = { label, bubble, path: res.outline.path };
       await show(res.where, bubble);
       status(res.where.reveal ? "It's inside a collapsed menu on this page." : "Found it on this page.");
       return;
@@ -308,13 +309,15 @@ async function ask(question, tabId) {
   }
 }
 
-async function escalate(goal, outline, gen, { pick = null, failed = null, unfinished = false } = {}) {
+async function escalate(goal, outline, gen, { pick = null, failed = null, unfinished = false, vanished = false } = {}) {
   const done = state.steps.slice(0, state.i).map((s) => s.target);
   log({
     kind: "escalate",
     title: failed || unfinished ? "Re-planning with cloud Gemini" : "Escalating to cloud Gemini",
     detail: unfinished
       ? `The route ended at "${state.steps[state.steps.length - 1]?.target}" short of the goal, so the rest is planned from here.`
+      : failed && vanished
+      ? `"${failed}" was on screen a moment ago but is hidden now (a menu or drawer closed), so the route is re-planned to reopen it.`
       : failed
       ? `The planned step "${failed}" isn't on this page, so the route is re-planned from what is.`
       : pick.elementId === "none" || pick.completesGoal
@@ -323,7 +326,8 @@ async function escalate(goal, outline, gen, { pick = null, failed = null, unfini
   });
   status(failed ? "Re-planning from this page with cloud Gemini…" : "Planning the route with cloud Gemini…");
   busy(failed || unfinished ? "Re-planning from here…" : "Planning your route…");
-  const plan = await planRoute({ goal, outline, done, failed, unfinished });
+  const plan = await planRoute({ goal, outline, done, failed, unfinished, vanished });
+  state.recover = vanished ? failed : null;
   if (gen !== state.gen) return;
   log({
     kind: "in_cloud",
@@ -363,7 +367,9 @@ async function runStep(gen, attempt, run) {
     return;
   }
   renderSteps();
-  const of = () => `Step ${state.i + 1} of ${state.steps.length}`;
+  // Routes can grow when Waypoint re-plans, so the popup never shows "Step x of y": just "Next step".
+  // (The side panel's step list shows the whole route.)
+  const of = () => "Next step";
   try {
     await ensureFresh(state.tabId);
     const outline = await send(state.tabId, { type: "outline" });
@@ -375,6 +381,27 @@ async function runStep(gen, attempt, run) {
     while (state.i < state.steps.length - 1 && alreadyHere(state.steps[state.i].target, outline.items)) {
       log({ kind: "info", title: `Already on "${state.steps[state.i].target}"`, detail: "Skipped: nothing to click." });
       state.i += 1;
+    }
+
+    // Recovering a control that vanished: as soon as it's back on screen (e.g. the drawer reopened),
+    // go straight to it, even if the re-plan put a detour before it.
+    if (state.recover) {
+      const j = state.steps.findIndex((st, k) => k >= state.i && exactMatch(state.recover, [{ label: st.target, state: "" }]));
+      const hit = j >= 0 && exactMatch(state.recover, outline.items);
+      if (hit) {
+        const where = placement(outline, hit.id);
+        if ((await send(state.tabId, { type: "check", id: where.showId }))?.ok && !stale()) {
+          if (j > state.i) log({ kind: "info", title: `Back on track: "${hit.label}"`, detail: "It's on screen again, so the detour is skipped." });
+          state.recover = null;
+          state.i = j;
+          renderSteps();
+          state.steps[j].shown = hit.label;
+          state.steps[j].shownPath = outline.path;
+          await show(where, { step: of(), text: state.steps[j].instruction });
+          status(state.steps[j].instruction);
+          return;
+        }
+      }
     }
 
     // Rung 1, no AI: an exact label match for this step or up to two steps ahead. Take the NEAREST step
@@ -393,8 +420,9 @@ async function runStep(gen, attempt, run) {
       renderSteps();
       if (await reportDone(hit, where)) return;
       state.steps[j].shown = hit.label;
+      state.steps[j].shownPath = outline.path;
       await show(where, { step: of(), text: state.steps[j].instruction });
-      status(`${of()}: ${where.reveal ? where.revealText : state.steps[j].instruction}`);
+      status(where.reveal ? where.revealText : state.steps[j].instruction);
       return;
     }
 
@@ -415,7 +443,16 @@ async function runStep(gen, attempt, run) {
       state.i = j;
       renderSteps();
       await show(where, { step: of(), text: `Reopen "${hit.label}" to continue.`, why: state.steps[state.i + 1]?.instruction || "" });
-      status(`${of()}: reopen "${hit.label}" to continue.`);
+      status(`Reopen "${hit.label}" to continue.`);
+      return;
+    }
+
+    // The current step's control was showing on this very page a moment ago and is gone now (a drawer
+    // or menu closed). Nano would only guess at a lookalike; plan the way back to it instead.
+    const cur = state.steps[state.i];
+    if (cur.shown && cur.shownPath === outline.path && state.replans < MAX_AUTO_REPLANS) {
+      state.replans += 1;
+      await escalate(state.goal, outline, gen, { failed: cur.target, vanished: true });
       return;
     }
 
@@ -443,8 +480,9 @@ async function runStep(gen, attempt, run) {
         state.i = j;
         renderSteps();
         step.shown = pickedItem?.label;
+        step.shownPath = res.outline.path;
         await show(res.where, { step: of(), text: step.instruction, src: SOURCE_LABEL[res.pick.source] });
-        status(`${of()}: ${res.where.reveal ? res.where.revealText : step.instruction}`);
+        status(res.where.reveal ? res.where.revealText : step.instruction);
         return;
       }
     }
@@ -455,9 +493,10 @@ async function runStep(gen, attempt, run) {
       busy("Waiting for the page…");
       stepTimer = setTimeout(() => runStep(gen, attempt + 1, run), 900);
     } else if (state.replans < MAX_AUTO_REPLANS) {
-      // Rung 3, cloud: the plan was wrong for this page; re-plan from what's actually on screen.
+      // Rung 3, cloud: re-plan from what's actually on screen. If this step's control was showing on this
+      // very page a moment ago, it didn't move: a menu or drawer closed, and the plan should reopen it.
       state.replans += 1;
-      await escalate(state.goal, outline, gen, { failed: state.steps[state.i].target });
+      await escalate(state.goal, outline, gen, { failed: cur.target });
     } else {
       chip(null);
       status(`Couldn't find "${state.steps[state.i].target}" here. Navigate there, or re-plan from this page.`);
@@ -486,6 +525,7 @@ async function resume() {
   if (!state.paused) return;
   setPaused(false);
   chip(null);
+  status("Resuming…");
   if (state.mode === "route") {
     busy("Picking up where you left off…");
     scheduleStep(0);
@@ -511,9 +551,22 @@ async function relocateSingle() {
   const hit = exactMatch(state.single.label, outline.items);
   if (hit) {
     const where = placement(outline, hit.id);
-    if ((await send(state.tabId, { type: "check", id: where.showId }))?.ok) return show(where, state.single.bubble);
+    if ((await send(state.tabId, { type: "check", id: where.showId }))?.ok) {
+      status("Found it on this page.");
+      return show(where, state.single.bubble);
+    }
   }
-  ask(state.goal, state.tabId);
+  // It was right here a moment ago: plan how to get it back on screen (usually reopen a menu or drawer),
+  // rather than asking from scratch, which can pick a different, longer route.
+  const label = state.single.label;
+  Object.assign(state, {
+    mode: "route",
+    steps: [{ instruction: `Open "${label}".`, target: label, where: "", shown: label, shownPath: state.single.path }],
+    i: 0,
+  });
+  renderSteps();
+  busy("Finding it again…");
+  await escalate(state.goal, outline, gen, { failed: label, vanished: state.single.path === outline.path });
 }
 
 $("resume").addEventListener("click", resume);

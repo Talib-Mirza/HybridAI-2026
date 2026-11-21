@@ -212,7 +212,7 @@ function extractJson(text) {
  * goal and the current page's redacted outline. When a step can't be found, it is called again with the
  * steps already done and the missing target, so it re-plans from what is actually on screen.
  */
-export async function planRoute({ goal, outline, done = [], failed = null, unfinished = false }) {
+export async function planRoute({ goal, outline, done = [], failed = null, unfinished = false, vanished = false }) {
   // Navigation and menu toggles first: they carry the app's structure, which is what a route needs.
   const isNav = (it) => /collapsed|expanded|hidden/.test(it.state) || /navigation/.test(it.context);
   const nav = [...outline.items.filter(isNav), ...outline.items.filter((it) => !isNav(it))]
@@ -222,6 +222,9 @@ export async function planRoute({ goal, outline, done = [], failed = null, unfin
   const replan = unfinished
     ? `\nSteps the user has already completed: ${doneList}
 They have NOT reached the goal yet. Plan the remaining steps from the controls on this page through to the goal.\n`
+    : failed && vanished
+    ? `\nSteps the user has already completed: ${doneList}
+The control "${failed}" was on screen on THIS page a moment ago and is hidden now: a menu, drawer or panel it sits in has closed. Plan the shortest way back to it, normally reopening that menu or drawer (look for a collapsed control above) and then "${failed}". Don't switch to a different route.\n`
     : failed
     ? `\nSteps the user has already completed: ${done.length ? done.map((d) => `"${d}"`).join(" → ") : "(none)"}
 The previous plan expected a control labelled "${failed}" on this page, but it is NOT here. That plan was wrong or out of date. Re-plan the remaining route from the controls that ARE on this page.\n`

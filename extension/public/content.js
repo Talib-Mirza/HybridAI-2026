@@ -405,6 +405,16 @@
       <span class="acts"><button class="btn resume">Resume</button><button class="btn ghost end">End</button></span></div>`;
   document.documentElement.appendChild(host);
   const $s = (sel) => shadow.querySelector(sel);
+
+  // Clicks on the bubble or chip are ours: keep them from reaching the page, or the page treats them
+  // as a click outside its open drawer or menu and closes it (pausing used to close Google Cloud's
+  // navigation drawer). Pressing our buttons also mustn't move focus away from the page.
+  for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click", "touchstart", "touchend"]) {
+    host.addEventListener(type, (e) => {
+      if (type === "pointerdown" || type === "mousedown") e.preventDefault();
+      e.stopPropagation();
+    });
+  }
   const ring = $s(".ring");
   const bubble = $s(".bubble");
   const arrow = $s(".arrow");
