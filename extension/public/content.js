@@ -331,7 +331,12 @@
 
   const host = document.createElement("div");
   host.id = "waypoint-host";
-  host.style.cssText = "position:fixed;inset:0;pointer-events:none;z-index:2147483647;";
+  // A manual popover, so the overlay can sit in the browser's top layer: apps that open menus and
+  // dialogs as popovers / modal dialogs render them above any z-index, which hid the bubble.
+  host.setAttribute("popover", "manual");
+  host.style.cssText =
+    "position:fixed;inset:0;width:auto;height:auto;max-width:none;max-height:none;margin:0;padding:0;border:0;" +
+    "background:transparent;overflow:visible;pointer-events:none;z-index:2147483647;";
   const shadow = host.attachShadow({ mode: "open" });
   shadow.innerHTML = `
     <style>
@@ -356,6 +361,22 @@
 
   let target = null;
   let raf = 0;
+
+  // (Re)enter the top layer last, i.e. above any popover or dialog the page has opened.
+  function raise() {
+    try {
+      if (host.matches(":popover-open")) host.hidePopover();
+      host.showPopover();
+    } catch {}
+  }
+  // The page opened a popover or dialog after us: go back on top while guidance is showing.
+  document.addEventListener(
+    "toggle",
+    (e) => {
+      if (target && e.target !== host && e.newState === "open") raise();
+    },
+    true
+  );
 
   function place() {
     if (!target || !target.isConnected) {
@@ -383,6 +404,7 @@
 
   function show(el, { step, text, why, src }) {
     target = el;
+    raise();
     shadow.querySelector(".step").textContent = step || "";
     shadow.querySelector(".text").textContent = text || "";
     shadow.querySelector(".why").textContent = why || "";
@@ -400,6 +422,7 @@
     cancelAnimationFrame(raf);
     ring.style.display = "none";
     bubble.style.display = "none";
+    try { host.hidePopover(); } catch {}
   }
 
   // When the user clicks the highlighted control, tell the side panel so it can advance.

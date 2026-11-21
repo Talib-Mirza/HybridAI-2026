@@ -75,7 +75,8 @@ export function exactMatch(target, items) {
 /** The step's target is where the user already is (the current nav link or the selected tab). */
 export function alreadyHere(target, items) {
   const t = norm(target);
-  return !!t && items.some((it) => norm(it.label) === t && /current|selected/.test(it.state));
+  // Accessible labels can wrap the visible text, e.g. "Selected Tab: APIs" for the "APIs" tab.
+  return !!t && items.some((it) => ` ${norm(it.label)} `.includes(` ${t} `) && /current|selected/.test(it.state));
 }
 
 /**
@@ -98,6 +99,15 @@ export function specificToGoal(goal, label, outline) {
   const goalStems = [...queryStems(goal)].filter((st) => !topic.has(st));
   const labelStems = new Set(words(label).map(stem));
   return goalStems.some((st) => labelStems.has(st));
+}
+
+/** "Open X" / "go to X" / "show me X": does this label name X? Then clicking it is the whole job. */
+export function namesNavTarget(goal, label) {
+  const m = goal.trim().match(/^(?:please\s+)?(?:open|go to|show(?: me)?|take me to|navigate to|bring up)\s+(?:the\s+|my\s+)?(.+?)[.!?]*$/i);
+  if (!m) return false;
+  const want = words(m[1]).map(stem);
+  const have = new Set(words(label).map(stem));
+  return want.length > 0 && want.every((st) => have.has(st));
 }
 
 export const line = (it) =>
@@ -196,13 +206,17 @@ function extractJson(text) {
  * goal and the current page's redacted outline. When a step can't be found, it is called again with the
  * steps already done and the missing target, so it re-plans from what is actually on screen.
  */
-export async function planRoute({ goal, outline, done = [], failed = null }) {
+export async function planRoute({ goal, outline, done = [], failed = null, unfinished = false }) {
   // Navigation and menu toggles first: they carry the app's structure, which is what a route needs.
   const isNav = (it) => /collapsed|expanded|hidden/.test(it.state) || /navigation/.test(it.context);
   const nav = [...outline.items.filter(isNav), ...outline.items.filter((it) => !isNav(it))]
     .slice(0, 80)
     .map((it) => [it.role, `"${it.label}"`, it.context, it.state].filter(Boolean).join(" | "));
-  const replan = failed
+  const doneList = done.length ? done.map((d) => `"${d}"`).join(" → ") : "(none)";
+  const replan = unfinished
+    ? `\nSteps the user has already completed: ${doneList}
+They have NOT reached the goal yet. Plan the remaining steps from the controls on this page through to the goal.\n`
+    : failed
     ? `\nSteps the user has already completed: ${done.length ? done.map((d) => `"${d}"`).join(" → ") : "(none)"}
 The previous plan expected a control labelled "${failed}" on this page, but it is NOT here. That plan was wrong or out of date. Re-plan the remaining route from the controls that ARE on this page.\n`
     : "";
@@ -227,7 +241,8 @@ Example of a complete route in a DIFFERENT app (goal "invite a teammate to my wo
 
 Rules:
 - Plan the COMPLETE route from the current page to the goal, including steps on pages the user hasn't reached yet. You only see the current page's controls; for later pages, use your knowledge of the app's navigation, tabs and buttons.
-- Start from the CURRENT page. At most 8 steps. Each step is one click or one field to fill.
+- Start from the CURRENT page. If a control on this page already leads toward the goal (e.g. the row of the item the goal is about), start there; don't send the user to another tab or page first.
+- At most 8 steps. Each step is one click or one field to fill.
 - "target" must be visible text in the UI: a navigation item, a tab name, a row name or a button label. When the next control is already listed above, use its label exactly.
 - Controls with state "collapsed" are menus or sections whose items are NOT listed above. Apps reorganise their navigation into such groups, so if the item you need isn't listed, open the collapsed group whose name best fits it (e.g. a "Users" page usually sits under a group like "Admin" or "People"), then continue with the item itself.
 - State "current" or "selected" marks where the user already is: never make it a step.
@@ -265,7 +280,7 @@ Rules:
         mode: InferenceMode.ONLY_IN_CLOUD,
         inCloudParams: {
           model: modelName,
-          generationConfig: { temperature: 0.2, responseMimeType: "application/json", responseJsonSchema: schema },
+          generationConfig: { temperature: 0, responseMimeType: "application/json", responseJsonSchema: schema },
         },
       },
       { timeout }

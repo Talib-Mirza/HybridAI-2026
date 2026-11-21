@@ -2,6 +2,7 @@
 import { defineConfig } from "vite";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { readdirSync } from "node:fs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -25,6 +26,12 @@ export default defineConfig({
     {
       // The side panel polls this file and reloads the extension when it changes (dev hot-reload).
       name: "waypoint-build-id",
+      // Watch mode only rebuilds for files in the module graph; also watch the copied public/ files
+      // (content script, background, manifest) so editing them triggers a rebuild + hot reload.
+      buildStart() {
+        const dir = resolve(here, "extension/public");
+        for (const f of readdirSync(dir)) this.addWatchFile(resolve(dir, f));
+      },
       generateBundle() {
         this.emitFile({ type: "asset", fileName: "build-id.txt", source: String(Date.now()) });
       },

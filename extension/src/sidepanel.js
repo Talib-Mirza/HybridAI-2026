@@ -1,5 +1,5 @@
 import "./sidepanel.css";
-import { pickElement, planRoute, hasKeywordHit, exactMatch, alreadyHere, looksDone, specificToGoal } from "./pipeline.js";
+import { pickElement, planRoute, hasKeywordHit, exactMatch, alreadyHere, looksDone, specificToGoal, namesNavTarget } from "./pipeline.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -156,6 +156,17 @@ async function locate(question, gen, run = state.run) {
   return { outline, pick, found, where };
 }
 
+/**
+ * No-AI sweep: a control that names the goal's subject (beyond the page's own topic) and whose status
+ * shows the goal's done-state, e.g. the "Firebase AI Logic" row reading "Enforced".
+ */
+async function sweepDone(outline) {
+  const item = outline.items.find(
+    (it) => !it.hover && !it.expander && specificToGoal(state.goal, it.label, outline) && looksDone(state.goal, it)
+  );
+  return item ? reportDone(item, placement(outline, item.id)) : false;
+}
+
 /** The control's own status says the goal is already in place: say so and stop (no AI call). */
 async function reportDone(item, where) {
   const evidence = looksDone(state.goal, item);
@@ -177,6 +188,7 @@ async function ask(question, tabId) {
 
   try {
     status("Reading this page…");
+    if (await sweepDone(await send(tabId, { type: "outline" }))) return;
     const res = await locate(question, gen);
     if (!res) return;
     const { pick } = res;
@@ -184,7 +196,10 @@ async function ask(question, tabId) {
     if (picked && !res.where.reveal && (await reportDone(picked, res.where))) return;
     const label = picked?.label || "this control";
     // Nano's "this completes it" only counts if the control names something specific to the goal.
-    const completes = pick.completesGoal && picked && specificToGoal(question, picked.label, res.outline);
+    // ...and "open / go to X" is completed by a control named X, whatever Nano thought.
+    const completes =
+      !!picked &&
+      ((pick.completesGoal && specificToGoal(question, picked.label, res.outline)) || namesNavTarget(question, picked.label));
     if (pick.completesGoal && !completes) {
       log({ kind: "info", title: "Not convinced", detail: `"${label}" doesn't name anything specific to the goal, so the cloud plans instead.` });
     }
@@ -193,7 +208,7 @@ async function ask(question, tabId) {
       state.mode = "single";
       await show(res.where, {
         step: "Here",
-        text: `Use "${label}".`,
+        text: res.where.reveal ? "" : `Use "${label}".`,
         src: SOURCE_LABEL[pick.source],
       });
       status(res.where.reveal ? "It's inside a collapsed menu on this page." : "Found it on this page.");
@@ -215,29 +230,31 @@ async function ask(question, tabId) {
   }
 }
 
-async function escalate(goal, outline, gen, { pick = null, failed = null } = {}) {
+async function escalate(goal, outline, gen, { pick = null, failed = null, unfinished = false } = {}) {
   const done = state.steps.slice(0, state.i).map((s) => s.target);
   log({
     kind: "escalate",
-    title: failed ? "Re-planning with cloud Gemini" : "Escalating to cloud Gemini",
-    detail: failed
+    title: failed || unfinished ? "Re-planning with cloud Gemini" : "Escalating to cloud Gemini",
+    detail: unfinished
+      ? `The route ended at "${state.steps[state.steps.length - 1]?.target}" short of the goal, so the rest is planned from here.`
+      : failed
       ? `The planned step "${failed}" isn't on this page, so the route is re-planned from what is.`
       : pick.elementId === "none" || pick.completesGoal
         ? "Gemini Nano found no control on this page that clearly does this, so a route is needed."
         : "Gemini Nano found the first step; the goal is on another page, so the cloud plans the route.",
   });
   status(failed ? "Re-planning from this page with cloud Gemini…" : "Planning the route with cloud Gemini…");
-  const plan = await planRoute({ goal, outline, done, failed });
+  const plan = await planRoute({ goal, outline, done, failed, unfinished });
   if (gen !== state.gen) return;
   log({
     kind: "in_cloud",
-    title: `Route ${failed ? "re-planned" : "planned"} (${plan.steps.length} steps)`,
+    title: `Route ${failed || unfinished ? "re-planned" : "planned"} (${plan.steps.length} steps)`,
     detail: `${plan.model}${plan.grounded ? " · grounded with Google Search" : ""} · ${plan.steps.map((s) => s.target).join(" → ")}`,
     sent: plan.sent,
     ms: plan.ms,
   });
   // A re-plan replaces the remaining steps; completed ones stay visible.
-  const kept = failed ? state.steps.slice(0, state.i) : [];
+  const kept = failed || unfinished ? state.steps.slice(0, state.i) : [];
   Object.assign(state, { mode: "route", steps: [...kept, ...plan.steps], i: kept.length });
   renderSteps();
   scheduleStep(0);
@@ -247,6 +264,17 @@ async function runStep(gen, attempt, run) {
   const stale = () => gen !== state.gen || run !== state.run || state.mode !== "route";
   if (stale()) return;
   if (state.i >= state.steps.length) {
+    // A short plan can end before the goal: if the last step didn't name anything specific to the goal
+    // (e.g. it was just a tab), plan the rest from here instead of declaring the route complete.
+    const last = state.steps[state.steps.length - 1]?.target || "";
+    const outline = await send(state.tabId, { type: "outline" });
+    if (stale()) return;
+    if (await sweepDone(outline)) return;
+    if (!specificToGoal(state.goal, last, outline) && state.replans < MAX_AUTO_REPLANS) {
+      state.replans += 1;
+      await escalate(state.goal, outline, gen, { unfinished: true });
+      return;
+    }
     status("Route complete. Review the final screen before confirming anything.");
     await send(state.tabId, { type: "hide" });
     state.mode = "idle";
@@ -260,6 +288,8 @@ async function runStep(gen, attempt, run) {
     await ensureFresh(state.tabId);
     const outline = await send(state.tabId, { type: "outline" });
     if (stale()) return;
+
+    if (await sweepDone(outline)) return;
 
     // Steps for where the user already is (the current page's nav link, the selected tab) are done.
     while (state.i < state.steps.length - 1 && alreadyHere(state.steps[state.i].target, outline.items)) {
@@ -298,6 +328,14 @@ async function runStep(gen, attempt, run) {
       status(`Step ${j + 1}: looking for "${step.target}"…`);
       const res = await locate(`"${step.target}" (${step.instruction}; ${step.where})`, gen, run);
       if (!res || stale()) return;
+      const pickedItem = res.outline.items.find((it) => it.id === res.pick.elementId);
+      if (res.found && /current|selected/.test(pickedItem?.state || "")) {
+        // Nano pointed at where the user already is: that step is done.
+        log({ kind: "info", title: `Already on "${pickedItem.label}"`, detail: "Skipped: nothing to click." });
+        state.i = j + 1;
+        scheduleStep(0);
+        return;
+      }
       if (res.found) {
         state.i = j;
         renderSteps();
@@ -400,15 +438,16 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
   el.textContent = `Gemini Nano: ${a}`;
   el.className = `badge ${a === "available" ? "ok" : "warn"}`;
   if (a === "available") {
-    // Warm-up: load Nano into memory now so the first real question doesn't pay the cold start.
+    // Warm-up: load Nano into memory now so the first real question doesn't pay the cold start, and
+    // keep this session open for the panel's lifetime: Chrome unloads the model once no session holds
+    // it, which made the first question after a long idle take ~15 s instead of ~3.5 s.
     const t0 = performance.now();
     try {
-      const s = await LanguageModel.create({
+      const s = (self.__waypointKeepAlive = await LanguageModel.create({
         expectedInputs: [{ type: "text", languages: ["en"] }],
         expectedOutputs: [{ type: "text", languages: ["en"] }],
-      });
+      }));
       await s.prompt("Reply with OK.");
-      s.destroy();
       el.textContent = `Gemini Nano: ready (${Math.round(performance.now() - t0)} ms warm-up)`;
     } catch (e) {
       console.warn("[Waypoint] warm-up failed", e);
