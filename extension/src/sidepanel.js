@@ -1,11 +1,11 @@
 import "./sidepanel.css";
-import { pickElement, planRoute, hasKeywordHit, exactMatch, alreadyHere, looksDone, specificToGoal, namesNavTarget, navTarget } from "./pipeline.js";
+import { pickElement, planRoute, hasKeywordHit, exactMatch, alreadyHere, looksDone, specificToGoal, namesNavTarget, navTarget, looksLikeExplain, pickTour, explainControl } from "./pipeline.js";
 
 const $ = (id) => document.getElementById(id);
 
 const state = {
   tabId: null,
-  mode: "idle", // idle | single | route
+  mode: "idle", // idle | single | route | explain
   goal: "",
   steps: [],
   i: 0,
@@ -16,7 +16,9 @@ const state = {
   paused: false, // the user paused the guide (×); nothing shows until they resume
   single: null, // single-page answer: { label, bubble } so it can be found again / resumed
   recover: null, // label of a step's control that vanished (drawer closed); jump to it once it's back
+  tour: null, // explain mode: { outline, items: [{ id, label, role, detail, text, started, done, source }], idx }
 };
+let nanoReady = false;
 
 let stepTimer = 0;
 /** Single-flight step search: a click and a page change often arrive together; only the last one runs. */
@@ -157,13 +159,16 @@ function log({ kind, title, detail, sent, ms }) {
 // ---------- Route UI ----------
 
 function renderSteps() {
-  $("route").hidden = state.mode !== "route";
+  const tour = state.mode === "explain";
+  $("route").hidden = state.mode !== "route" && !tour;
+  $("route-title").textContent = tour ? "Tour" : "Route";
   const ol = $("steps");
   ol.innerHTML = "";
   state.steps.forEach((s, idx) => {
     const li = document.createElement("li");
     li.className = idx < state.i ? "done" : idx === state.i ? "current" : "";
-    li.textContent = s.instruction;
+    if (tour && state.tour?.items[idx]?.missing) li.className += " missing";
+    li.textContent = s.instruction || s.target;
     ol.appendChild(li);
   });
 }
@@ -509,6 +514,170 @@ async function runStep(gen, attempt, run) {
   }
 }
 
+// ---------- Explain mode: a streamed tour ----------
+// Nano picks the controls to explain (ids only, so it's quick), the first popup appears right away, and
+// explanations are written one at a time in the background, starting from the one on screen. The popup
+// streams its text in as Nano writes it; if the user clicks Next before the next one is ready, the ring
+// moves there at once and the bubble shows a loading state until the text arrives.
+
+async function explain(question, tabId) {
+  const gen = ++state.gen;
+  clearTimeout(stepTimer);
+  Object.assign(state, { tabId, mode: "explain", goal: question, steps: [], i: 0, replans: 0, revealing: false, single: null, recover: null, tour: null });
+  setPaused(false);
+  renderSteps();
+  $("replan").hidden = true;
+  await ensureFresh(tabId);
+  await send(tabId, { type: "hide" });
+  try {
+    status("Choosing what to explain…");
+    busy("Choosing what to explain…");
+    const outline = await send(tabId, { type: "outline" });
+    const pick = await pickTour({ question, outline });
+    if (gen !== state.gen) return;
+    log({
+      kind: pick.source === "in_cloud" ? "in_cloud" : pick.source === "on_device" ? "on_device" : "info",
+      title: `Tour: ${pick.items.length} control${pick.items.length === 1 ? "" : "s"} to explain`,
+      detail: `${pick.items.map((it) => it.label).join(" · ")} · ${pick.byOrder ? "the page's main controls in reading order, no AI call" : SOURCE_LABEL[pick.source] || pick.source}`,
+      sent: pick.sent,
+      ms: pick.ms,
+    });
+    if (!pick.items.length) {
+      chip(null);
+      state.mode = "idle";
+      status("I couldn't find anything on this page that matches. Try naming the setting or section.");
+      return;
+    }
+    const details = (await send(tabId, { type: "describe", ids: pick.items.map((it) => it.id) })) || [];
+    state.tour = {
+      outline,
+      idx: 0,
+      items: pick.items.map((it, k) => ({ ...it, detail: details[k] || {}, text: "", started: false, done: false, source: null })),
+    };
+    state.steps = state.tour.items.map((it) => ({ target: it.label, instruction: it.label }));
+    await showTourItem(0, 1);
+    runExplainer(gen);
+  } catch (e) {
+    console.error(e);
+    chip(null);
+    status(`Error: ${e?.message || e}`);
+  }
+}
+
+/** Writes explanations one at a time: the one on screen first, then the ones after it, then the rest. */
+async function runExplainer(gen) {
+  const t = state.tour;
+  while (gen === state.gen && state.tour === t) {
+    let k = t.items.findIndex((it, n) => n >= t.idx && !it.started && !it.missing);
+    if (k < 0) k = t.items.findIndex((it) => !it.started && !it.missing);
+    if (k < 0) return;
+    const it = t.items[k];
+    it.started = true;
+    let last = 0;
+    const push = (final) => {
+      if (gen !== state.gen || t.idx !== k || state.paused) return;
+      send(state.tabId, {
+        type: "update",
+        text: it.text,
+        loading: !it.text,
+        streaming: !final,
+        src: final ? SOURCE_LABEL[it.source] : "",
+      }).catch(() => {});
+    };
+    try {
+      const r = await explainControl({
+        question: state.goal,
+        outline: t.outline,
+        item: it,
+        detail: it.detail,
+        onText: (txt) => {
+          it.text = txt;
+          if (performance.now() - last > 60) {
+            last = performance.now();
+            push(false);
+          }
+        },
+      });
+      if (gen !== state.gen) return;
+      Object.assign(it, { text: r.text || "No explanation came back for this one.", done: true, source: r.source });
+      log({ kind: r.source === "in_cloud" ? "in_cloud" : "on_device", title: `Explain "${it.label}"`, detail: SOURCE_LABEL[r.source] || r.source, sent: r.sent, ms: r.ms });
+    } catch (e) {
+      if (gen !== state.gen) return;
+      Object.assign(it, { text: "Couldn't write an explanation for this one.", done: true, source: "none" });
+      console.warn("[Waypoint] explain failed", e);
+    }
+    push(true);
+  }
+}
+
+/** Show tour stop k (dir: +1 / -1 is the way to skip if that control is gone). */
+async function showTourItem(k, dir = 1) {
+  const t = state.tour;
+  if (!t || state.paused) return;
+  while (t.items[k]?.missing) k += dir;
+  if (k < 0 || k >= t.items.length) return dir > 0 ? finishTour() : showTourItem(t.idx, 1);
+  t.idx = state.i = k;
+  renderSteps();
+  const it = t.items[k];
+  const n = t.items.length;
+  const hasNext = t.items.slice(k + 1).some((x) => !x.missing);
+  const hasBack = t.items.slice(0, k).some((x) => !x.missing);
+  const r = await send(state.tabId, {
+    type: "show",
+    id: it.id,
+    mode: "explain",
+    step: n > 1 ? `${k + 1} of ${n}` : "Explainer",
+    title: it.label.replace(/^(?:selected|current|active)\s+(?:tab|item|page)\s*[:,-]\s*/i, ""),
+    text: it.text,
+    loading: !it.text,
+    loadingText: nanoReady ? "Gemini Nano is writing this on your device…" : "Writing an explanation…",
+    streaming: !it.done && !!it.text,
+    src: it.done ? SOURCE_LABEL[it.source] || "" : "",
+    back: hasBack,
+    next: hasNext,
+  });
+  if (!r?.ok) {
+    // The page re-rendered: find the tour's controls again by label.
+    if (await remapTour()) return showTourItem(k, dir);
+    it.missing = true;
+    return showTourItem(k + dir, dir);
+  }
+  status(`Explaining ${k + 1} of ${n}: ${it.label}`);
+}
+
+/** After a re-render, ids change: match each tour stop to the new outline by label and role. */
+async function remapTour() {
+  const t = state.tour;
+  if (!t) return false;
+  const outline = await send(state.tabId, { type: "outline" });
+  const used = new Set();
+  let changed = false;
+  for (const it of t.items) {
+    const hit = outline.items.find((x) => !used.has(x.id) && x.label === it.label && x.role === it.role);
+    if (hit) {
+      used.add(hit.id);
+      if (hit.id !== it.id) changed = true;
+      it.id = hit.id;
+      it.missing = false;
+    } else if (!it.missing) {
+      it.missing = true;
+      changed = true;
+    }
+  }
+  t.outline = outline;
+  return changed && !t.items[t.idx]?.missing;
+}
+
+function finishTour() {
+  state.gen++;
+  state.mode = "idle";
+  state.tour = null;
+  send(state.tabId, { type: "hide" }).catch(() => {});
+  chip("done", "Tour complete");
+  renderSteps();
+  status("Tour complete.");
+}
+
 // ---------- Pause / resume ----------
 // × on the bubble pauses instead of ending: the route and progress are kept, and Resume (in the page
 // chip or here) picks up from whatever page the user is on now.
@@ -530,12 +699,13 @@ async function resume() {
     busy("Picking up where you left off…");
     scheduleStep(0);
   } else if (state.mode === "single") relocateSingle();
+  else if (state.mode === "explain") showTourItem(state.tour?.idx ?? 0, 1);
 }
 
 function endGuide() {
   state.gen++;
   clearTimeout(stepTimer);
-  Object.assign(state, { mode: "idle", single: null });
+  Object.assign(state, { mode: "idle", single: null, tour: null });
   setPaused(false);
   send(state.tabId, { type: "hide" }).catch(() => {});
   chip(null);
@@ -574,6 +744,36 @@ $("end").addEventListener("click", endGuide);
 
 // ---------- Events ----------
 
+// ---------- Guide me / Explain switch ----------
+// Explain is picked automatically when the request reads like a question about the page ("What does…",
+// "Explain…", "Walk me through…"), unless the user chose a mode themselves.
+
+let uiMode = "guide";
+let modeChosen = false;
+const PLACEHOLDER = {
+  guide: "What do you want to do? e.g. Create a service account key",
+  explain: "What should I explain? e.g. What do the settings on this page do?",
+};
+function setMode(m, byUser = false) {
+  uiMode = m;
+  if (byUser) modeChosen = true;
+  document.querySelectorAll(".seg button").forEach((b) => b.setAttribute("aria-checked", String(b.dataset.mode === m)));
+  $("ask").textContent = m === "explain" ? "Explain" : "Guide me";
+  $("q").placeholder = PLACEHOLDER[m];
+}
+document.querySelectorAll(".seg button").forEach((b) => b.addEventListener("click", () => setMode(b.dataset.mode, true)));
+$("q").addEventListener("input", () => {
+  const q = $("q").value;
+  if (!q.trim()) modeChosen = false;
+  if (!modeChosen) setMode(looksLikeExplain(q) ? "explain" : "guide");
+});
+$("q").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) {
+    e.preventDefault();
+    $("ask-form").requestSubmit();
+  }
+});
+
 $("ask-form").addEventListener("submit", async (e) => {
   e.preventDefault();
   const q = $("q").value.trim();
@@ -585,7 +785,8 @@ $("ask-form").addEventListener("submit", async (e) => {
       : "Open the page you need help with first.";
     return;
   }
-  ask(q, tabId);
+  if (uiMode === "explain") explain(q, tabId);
+  else ask(q, tabId);
 });
 
 $("replan").addEventListener("click", async () => {
@@ -606,7 +807,13 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
     if (key === lastCommand.key && Date.now() - lastCommand.at < 2000) return;
     lastCommand = { key, at: Date.now() };
     $("q").value = msg.q;
-    ask(msg.q, fromTab);
+    if (looksLikeExplain(msg.q)) {
+      setMode("explain");
+      explain(msg.q, fromTab);
+    } else {
+      setMode("guide");
+      ask(msg.q, fromTab);
+    }
     return;
   }
   if (fromTab !== state.tabId) return;
@@ -627,14 +834,28 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
       chip("done", "Done");
       status("Done.");
     }
+  } else if ((msg.type === "url-changed" || msg.type === "page-ready") && state.mode === "explain") {
+    // The tour explains one page; if the user leaves it, end it rather than pointing at stale controls.
+    send(state.tabId, { type: "hide" }).catch(() => {});
+    state.gen++;
+    Object.assign(state, { mode: "idle", tour: null });
+    chip(null);
+    renderSteps();
+    status("You left the page, so the tour ended. Ask again to explain this one.");
   } else if ((msg.type === "url-changed" || msg.type === "page-ready") && state.mode === "route" && !state.paused) {
     scheduleStep(msg.type === "page-ready" ? 300 : 900);
   } else if (msg.type === "target-lost" && !state.paused) {
     // The highlighted control vanished (re-render, closed drawer, navigation): find it again.
-    if (state.mode === "route") {
+    if (state.mode === "explain") {
+      remapTour().then(() => showTourItem(state.tour?.idx ?? 0, 1));
+    } else if (state.mode === "route") {
       busy("Finding the step again…");
       scheduleStep(400);
     } else if (state.mode === "single") relocateSingle();
+  } else if (msg.type === "explain-next" && state.mode === "explain") {
+    showTourItem(state.tour.idx + 1, 1);
+  } else if (msg.type === "explain-back" && state.mode === "explain") {
+    showTourItem(state.tour.idx - 1, -1);
   } else if (msg.type === "overlay-paused") {
     pause();
   } else if (msg.type === "resume") {
@@ -670,6 +891,7 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
         expectedOutputs: [{ type: "text", languages: ["en"] }],
       }));
       await s.prompt("Reply with OK.");
+      nanoReady = true;
       el.textContent = `Gemini Nano: ready (${Math.round(performance.now() - t0)} ms warm-up)`;
     } catch (e) {
       console.warn("[Waypoint] warm-up failed", e);

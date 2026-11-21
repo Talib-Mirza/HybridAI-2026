@@ -263,6 +263,12 @@
       if (len === best && !it.state.includes("current")) it.state = [it.state, "current"].filter(Boolean).join(",");
   }
 
+  /** Inside the page's main region (<main> / role=main), across shadow-DOM boundaries? */
+  function inMain(el) {
+    for (let n = el; n; n = parentOf(n)) if (n.matches?.("main,[role=main]")) return true;
+    return false;
+  }
+
   function buildOutline() {
     idToEl = new Map();
     const ids = new Map();
@@ -328,6 +334,7 @@
         context: redact(contextOf(el)),
         state: stateOf(el),
         offscreen: r.bottom < 0 || r.top > innerHeight,
+        main: inMain(el),
       });
     }
     markCurrentSection(items);
@@ -343,6 +350,32 @@
       headings,
       items,
     };
+  }
+
+  /**
+   * What the page says around a control, for explaining it: its tooltip/description, and the nearest
+   * surrounding text (form hint, row cells, card copy). Redacted; only ever sent to on-device Nano.
+   */
+  function describeEl(el) {
+    const label = labelOf(el);
+    const ids = (el.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean);
+    const described = ids.map((id) => document.getElementById(id)).filter(Boolean).map(textOf).join(" ");
+    const hint = [described, el.getAttribute("aria-description"), el.getAttribute("title"), el.getAttribute("mattooltip"), el.getAttribute("data-tooltip")]
+      .filter((t) => t && t !== label)
+      .join(" · ");
+    let nearby = "";
+    let n = el;
+    for (let k = 0; k < 5 && n; k++) {
+      n = parentOf(n);
+      if (!n || n === document.body) break;
+      const t = textOf(n);
+      if (t.length > label.length + 25) {
+        nearby = t.length > 2000 ? "" : t; // a whole page section says nothing specific
+        break;
+      }
+    }
+    if (nearby && label) nearby = nearby.split(label).join(" ").replace(/\s+/g, " ").trim();
+    return { hint: redact(hint).slice(0, 200), nearby: redact(nearby).slice(0, 320) };
   }
 
   // ---------- Overlay ----------
@@ -366,6 +399,20 @@
       .bubble .why:empty,.bubble .text:empty{display:none}
       .bubble .src{color:#7f8bb0;font-size:10.5px;margin-top:8px}
       .bubble .src:empty{display:none}
+      .bubble.explain{max-width:340px}
+      .bubble .title{font-weight:650;font-size:14px;margin-bottom:4px;padding-right:18px}
+      .bubble .title:empty{display:none}
+      .bubble.streaming .text::after{content:"";display:inline-block;width:7px;height:14px;margin-left:2px;vertical-align:-2px;background:#9fb3ff;border-radius:1px;animation:blink 1s steps(1) infinite}
+      .bubble .loading{display:none;align-items:center;gap:8px;color:#c9d2f0;font-size:12.5px}
+      .bubble.loading .loading{display:flex}
+      .bubble.loading .text{display:none}
+      .spinner{width:14px;height:14px;border-radius:50%;border:2px solid rgba(159,179,255,.3);border-top-color:#9fb3ff;animation:spin .8s linear infinite;flex:none}
+      .bubble .nav{display:none;align-items:center;gap:6px;margin-top:12px}
+      .bubble.explain .nav{display:flex}
+      .bubble .nav .back[hidden]{visibility:hidden;display:inline-block}
+      .bubble .nav .next{margin-left:auto}
+      @keyframes blink{50%{opacity:0}}
+      @keyframes spin{to{transform:rotate(360deg)}}
       .bubble .scroll{display:none;margin-top:10px;padding:8px 10px;align-items:center;gap:10px;color:#ffd78a;font-size:14px;font-weight:600;background:rgba(255,215,138,.1);border-radius:8px}
       .bubble.away .scroll{display:flex}
       .scroll-icon{flex:none;width:22px;height:22px;animation:nudge 1.1s ease-in-out infinite}
@@ -388,17 +435,20 @@
       .pill.done .dot{display:block;background:#3ccf8e;animation:none}
       @keyframes in{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
       @keyframes pulse{0%,100%{opacity:.35}50%{opacity:1}}
-      @media (prefers-reduced-motion:reduce){.ring,.bubble,.pill,.pill .dot,.scroll-icon{transition:none;animation:none}}
+      @media (prefers-reduced-motion:reduce){.ring,.bubble,.pill,.pill .dot,.scroll-icon,.spinner,.bubble.streaming .text::after{transition:none;animation:none}}
     </style>
     <div class="ring"></div>
     <div class="bubble" role="dialog" aria-label="Waypoint guide">
       <button class="x" title="Pause the guide" aria-label="Pause the guide">×</button>
-      <div class="step"></div><div class="text"></div><div class="why"></div>
+      <div class="step"></div><div class="title"></div><div class="text"></div>
+      <div class="loading"><span class="spinner"></span><span class="loading-text"></span></div>
+      <div class="why"></div>
       <div class="scroll">
         <svg class="scroll-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
           <rect x="7" y="1.5" width="10" height="14" rx="5"/><path d="M12 5v3"/><path d="m8.5 18.5 3.5 3 3.5-3"/>
         </svg>
         <span class="scroll-text"></span><button class="btn show-me">Show me</button></div>
+      <div class="nav"><button class="btn ghost back">← Back</button><button class="btn next">Next →</button></div>
       <div class="src"></div><div class="arrow"></div>
     </div>
     <div class="pill" role="status" aria-live="polite"><span class="dot"></span><span class="pill-text"></span>
@@ -421,6 +471,7 @@
   const pillEl = $s(".pill");
 
   let target = null;
+  let bubbleMode = "guide"; // "guide": clicking the target is the step; "explain": Back/Next drive the tour
   let raf = 0;
   let scrollers = []; // the target's scrollable ancestors (they clip it)
   let lostSince = 0;
@@ -470,10 +521,14 @@
     safeSend({ type: "end" });
   });
 
+  $s(".next").addEventListener("click", () => safeSend({ type: "explain-next" }));
+  $s(".back").addEventListener("click", () => safeSend({ type: "explain-back" }));
+
   // × pauses rather than ends: the guide can be resumed from the chip or the side panel.
   $s(".x").addEventListener("click", () => {
+    const wasExplain = bubbleMode === "explain";
     hide();
-    pill("paused", "Guide paused");
+    pill("paused", wasExplain ? "Tour paused" : "Guide paused");
     safeSend({ type: "overlay-paused" });
   });
   $s(".show-me").addEventListener("click", () => target && target.scrollIntoView({ block: "center", behavior: "smooth" }));
@@ -594,16 +649,21 @@
     anchorBubble(vis);
   }
 
-  function show(el, { step, text, why, src }) {
+  function show(el, { step, text, why, src, mode, title, loading, loadingText, streaming, back, next, nextLabel }) {
     target = el;
     lostSince = 0;
     covered = false;
+    bubbleMode = mode === "explain" ? "explain" : "guide";
     pill(null);
     raise();
+    bubble.classList.toggle("explain", bubbleMode === "explain");
     $s(".step").textContent = step || "";
-    $s(".text").textContent = text || "";
+    $s(".title").textContent = title || "";
     $s(".why").textContent = why || "";
-    $s(".src").textContent = src || "";
+    $s(".loading-text").textContent = loadingText || "Writing…";
+    $s(".back").hidden = !back;
+    $s(".next").textContent = nextLabel || (next ? "Next →" : "Done");
+    update({ text, src, loading, streaming });
     ring.style.display = "block";
     bubble.style.display = "block";
     const vis = isVisible(el) ? el : hoverOf.get(el) || el;
@@ -612,6 +672,14 @@
     if (!inView(vis)) vis.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
     cancelAnimationFrame(raf);
     place();
+  }
+
+  /** Streamed text for the bubble that's showing (explain mode). */
+  function update({ text, src, loading, streaming }) {
+    $s(".text").textContent = text || "";
+    $s(".src").textContent = src || "";
+    bubble.classList.toggle("loading", !!loading);
+    bubble.classList.toggle("streaming", !!streaming);
   }
 
   function hide() {
@@ -626,7 +694,7 @@
   document.addEventListener(
     "click",
     (e) => {
-      if (target && e.composedPath().includes(target)) {
+      if (target && bubbleMode === "guide" && e.composedPath().includes(target)) {
         hide(); // clicked: the step is done, so its control disappearing next is expected, not "lost"
         safeSend({ type: "target-clicked", path: pagePath() });
       }
@@ -682,6 +750,16 @@
       }
       case "hide":
         hide();
+        reply({ ok: true });
+        break;
+      case "describe":
+        reply((msg.ids || []).map((id) => {
+          const el = idToEl.get(id);
+          return el ? describeEl(el) : {};
+        }));
+        break;
+      case "update":
+        update(msg);
         reply({ ok: true });
         break;
       case "pill":

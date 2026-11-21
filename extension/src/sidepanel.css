@@ -67,3 +67,10 @@ button.link { background: none; color: var(--muted); padding: 0; font-size: 12px
 
 .paused { display: flex; align-items: center; gap: 12px; margin-top: 8px; }
 .paused[hidden] { display: none; }
+
+/* Guide me / Explain switch */
+.seg { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; padding: 2px; margin-bottom: 8px; background: var(--card); border: 1px solid var(--border); border-radius: 9px; }
+.seg button { background: transparent; color: var(--muted); padding: 6px 8px; border-radius: 7px; font-weight: 600; }
+.seg button[aria-checked="true"] { background: var(--accent); color: #fff; }
+.seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+#steps li.missing { opacity: .5; text-decoration: line-through; }

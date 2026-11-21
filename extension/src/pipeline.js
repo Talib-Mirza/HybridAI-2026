@@ -314,3 +314,156 @@ Rules:
     return await run(CLOUD_MODEL, 30_000);
   }
 }
+
+// ---------- Explain mode ----------
+
+/** Does the request ask to understand the page rather than do something on it? */
+export function looksLikeExplain(question) {
+  return /^\s*(please\s+)?(explain|describe|tour|teach me|help me understand|walk me through|give me a( quick)? tour|what\s+(does|do|is|are|'s)\b|what's\b|how does\b|tell me (about|what))/i.test(
+    question
+  );
+}
+
+/**
+ * Explain mode, step 1: which controls to explain, in page order. Nano picks ids from an enum of real
+ * controls (so it can't invent one); output is only ids, so it stays fast even for a 20-stop tour.
+ */
+// Words that describe the request ("what do the settings on this page do") rather than name a control.
+const TOUR_GENERIC = new Set(
+  "explain describe tour walk through what does mean means work works each every all settings setting options option controls control things thing buttons button fields field sections section page screen here these this stuff everything".split(" ").map((w) => w.slice(0, 5))
+);
+const DOC_LINK = /\b(learn more|view docs?|documentation|release notes)\b|opens? (in )?(a )?new (tab|window)|\bexternal\b/i;
+const aboutWholePage = (q) => /\b(this|the|current)\s+(page|screen|view)\b|\bhere\b|\bon (this|the) page\b/i.test(q);
+
+export async function pickTour({ question, outline, max = 20 }) {
+  const stems = new Set([...queryStems(question)].filter((st) => !TOUR_GENERIC.has(st)));
+  const wholePage = aboutWholePage(question);
+  const visible = outline.items
+    .map((it, idx) => ({ it, idx }))
+    .filter(({ it }) => !it.expander && !/hidden/.test(it.state))
+    // "This page" means its content, not the app's navigation around it.
+    .filter(({ it }) => !wholePage || it.main || !/navigation/.test(it.context))
+    // Doc links aren't controls worth a tour stop, unless the user is asking about docs.
+    .filter(({ it }) => /\bdocs?\b|documentation|learn more/i.test(question) || !DOC_LINK.test(it.label));
+  if (!visible.length) return { items: [], source: "none", ms: 0, sent: "" };
+
+  // "Explain this page" with nothing more specific: the tour is the page's main controls in reading
+  // order. No model is needed for that, so the first popup appears immediately.
+  if (wholePage && stems.size === 0) {
+    // Stay inside the page's main region when it has one (skips sidebars, headers and skip links).
+    const main = visible.filter((x) => x.it.main);
+    const pool = main.length >= 3 ? main : visible;
+    return { items: pool.slice(0, max).map((x) => x.it), source: "none", ms: 0, sent: "", byOrder: true };
+  }
+  // Keyword matches first, then page content over navigation chrome; keep the top 40 in page order.
+  const cands = visible
+    .map((x) => ({ ...x, s: score(x.it, stems) * 3 + (/navigation/.test(x.it.context) ? 0 : 1) }))
+    .sort((a, b) => b.s - a.s || a.idx - b.idx)
+    .slice(0, 40)
+    .sort((a, b) => a.idx - b.idx)
+    .map((x) => x.it);
+  if (!cands.length) return { items: [], source: "none", ms: 0, sent: "" };
+
+  const schema = {
+    type: "object",
+    properties: { ids: { type: "array", items: { type: "string", enum: cands.map((c) => c.id) }, maxItems: max } },
+    required: ["ids"],
+  };
+  const model = getGenerativeModel(
+    ai,
+    {
+      mode: InferenceMode.PREFER_ON_DEVICE,
+      inCloudParams: {
+        model: CLOUD_MODEL,
+        generationConfig: { responseMimeType: "application/json", responseJsonSchema: schema, temperature: 0 },
+      },
+      onDeviceParams: {
+        createOptions: {
+          expectedInputs: [{ type: "text", languages: ["en"] }],
+          expectedOutputs: [{ type: "text", languages: ["en"] }],
+        },
+        promptOptions: { responseConstraint: schema },
+      },
+    },
+    { timeout: 30_000 }
+  );
+  const prompt = `You are Waypoint, giving a guided tour of a web page.
+${pageHeader(outline)}
+
+The user wants an explanation: "${question}"
+
+Controls on this page (id | role | label | context | state):
+${compactLines(cands).join("\n")}
+
+Choose the controls whose explanation answers the request, in a sensible tour order. If they ask about one specific thing, choose just that one. If they ask about the whole page or a section, choose its meaningful content: settings, switches, tabs, table rows, key action buttons, at most ${max}. Skip site navigation and generic chrome (account menu, help, search, notifications, feedback, "learn more" links) unless asked.`;
+  const t0 = performance.now();
+  const r = (await model.generateContent(prompt)).response;
+  const ids = [...new Set(JSON.parse(r.text()).ids || [])];
+  const byId = new Map(cands.map((c) => [c.id, c]));
+  const order = new Map(outline.items.map((it, n) => [it.id, n]));
+  const items = ids.filter((id) => byId.has(id)).sort((a, b) => order.get(a) - order.get(b)).map((id) => byId.get(id));
+  return { items, source: r.inferenceSource, ms: Math.round(performance.now() - t0), sent: prompt, candidates: cands.length };
+}
+
+/**
+ * Explain mode, step 2: one control's explanation, streamed. The text around the control (form hints,
+ * row cells, card text) only ever goes to on-device Nano; if Nano isn't available the cloud gets just the
+ * control's label, type and state.
+ */
+/** Nano sometimes echoes the privacy placeholders; turn them back into natural wording for the reader. */
+const unplaceholder = (t) =>
+  t
+    .replace(/\[(?:your )?project\]'s/gi, "your project's")
+    .replace(/(?:your |the )?\[(?:your )?project\]/gi, "your project")
+    .replace(/\[email\]/gi, "the email address")
+    .replace(/\[name\]/gi, "the account holder")
+    .replace(/\[(?:number|uuid|token|api-key|app-id)\]/gi, "the ID");
+
+export async function explainControl({ question, outline, item, detail = {}, onText }) {
+  const base = `You are Waypoint, explaining a web app's UI to a developer.
+${pageHeader(outline)}
+
+The user asked: "${question}"
+
+Explain this control:
+- label: "${item.label}"
+- type: ${item.role}${item.state ? `\n- state: ${item.state}` : ""}${item.context ? `\n- context: ${item.context}` : ""}`;
+  const local = `${base}${detail.hint ? `\n- tooltip / description: ${detail.hint}` : ""}${detail.nearby ? `\n- text next to it on the page: "${detail.nearby}"` : ""}`;
+  const rules = `
+
+Write 1 or 2 short sentences, at most 40 words: what it does and when or why someone would use it. If it's a setting, status or table row, say what its current state or values mean. Start with a verb or the point itself (e.g. "Opens…", "Shows…", "Requires…"), not with the control's name. Be direct and confident; only hedge if the page gives no clue at all. Text in [brackets] was redacted for privacy: refer to it generically ("your project", "this app"). Plain text only, no markdown.`;
+
+  const run = async (mode, prompt) => {
+    const model = getGenerativeModel(
+      ai,
+      {
+        mode,
+        inCloudParams: { model: CLOUD_MODEL, generationConfig: { temperature: 0.2 } },
+        onDeviceParams: {
+          createOptions: {
+            expectedInputs: [{ type: "text", languages: ["en"] }],
+            expectedOutputs: [{ type: "text", languages: ["en"] }],
+          },
+        },
+      },
+      { timeout: 30_000 }
+    );
+    const t0 = performance.now();
+    const res = await model.generateContentStream(prompt);
+    let text = "";
+    let source = null;
+    for await (const chunk of res.stream) {
+      source = source || chunk.inferenceSource;
+      text += chunk.text();
+      onText?.(unplaceholder(text));
+    }
+    return { text: unplaceholder(text).trim(), source: source || (mode === InferenceMode.ONLY_ON_DEVICE ? "on_device" : "in_cloud"), ms: Math.round(performance.now() - t0), sent: prompt };
+  };
+
+  try {
+    return await run(InferenceMode.ONLY_ON_DEVICE, local + rules);
+  } catch (e) {
+    console.warn("[Waypoint] on-device explanation unavailable, using cloud with less context:", e?.message);
+    return await run(InferenceMode.ONLY_IN_CLOUD, base + rules);
+  }
+}

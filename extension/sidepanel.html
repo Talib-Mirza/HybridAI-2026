@@ -21,6 +21,10 @@
     </section>
 
     <form id="ask-form">
+      <div class="seg" role="radiogroup" aria-label="What should Waypoint do?">
+        <button type="button" role="radio" aria-checked="true" data-mode="guide">Guide me</button>
+        <button type="button" role="radio" aria-checked="false" data-mode="explain">Explain</button>
+      </div>
       <textarea id="q" rows="3" placeholder="What do you want to do? e.g. Create a service account key"></textarea>
       <div class="row">
         <button type="submit" id="ask">Guide me</button>
@@ -35,7 +39,7 @@
     </div>
 
     <section id="route" hidden>
-      <h2>Route</h2>
+      <h2 id="route-title">Route</h2>
       <ol id="steps"></ol>
       <button type="button" id="replan" class="secondary" hidden>Re-plan from this page</button>
     </section>
