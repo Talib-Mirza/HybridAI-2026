@@ -864,7 +864,12 @@ $("end").addEventListener("click", endGuide);
 // through a one-field schema. The wording check is only a fallback if no model is reachable.
 
 let routeToken = 0;
+let lastAsk = { key: "", at: 0 };
 async function handle(question, tabId) {
+  // A double-clicked Ask (same question, same tab, within 1.5 s) is one request.
+  const key = `${tabId}|${question.trim()}`;
+  if (key === lastAsk.key && Date.now() - lastAsk.at < 1500) return;
+  lastAsk = { key, at: Date.now() };
   const token = ++routeToken;
   // Stop whatever was running; the new request takes over the page.
   state.gen++;

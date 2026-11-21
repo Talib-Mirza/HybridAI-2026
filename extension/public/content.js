@@ -469,7 +469,9 @@
       @keyframes blink{50%{opacity:0}}
       @keyframes spin{to{transform:rotate(360deg)}}
       .bubble .scroll{display:none;margin-top:10px;padding:8px 10px;align-items:center;gap:10px;color:#ffd78a;font-size:14px;font-weight:600;background:rgba(255,215,138,.1);border-radius:8px}
-      .bubble.away .scroll{display:flex}
+      .bubble.away .scroll,.bubble.covered .scroll{display:flex}
+      .bubble.covered .scroll-icon,.bubble.covered .show-me{display:none}
+      .ring.covered{border-style:dashed;opacity:.7}
       .scroll-icon{flex:none;width:22px;height:22px;animation:nudge 1.1s ease-in-out infinite}
       .bubble.up .scroll-icon{transform:rotate(180deg);animation-name:nudge-up}
       .scroll .btn{margin-left:auto}
@@ -586,7 +588,19 @@
     pill("paused", wasExplain ? "Tour paused" : "Guide paused");
     safeSend({ type: "overlay-paused" });
   });
-  $s(".show-me").addEventListener("click", () => target && target.scrollIntoView({ block: "center", behavior: "smooth" }));
+  // Show me: scroll it into view; if it still can't be seen afterwards, it isn't really there any more
+  // (e.g. its menu closed), so let the panel find the step again rather than leave a dead button.
+  $s(".show-me").addEventListener("click", () => {
+    if (!target) return;
+    const el = target;
+    el.scrollIntoView({ block: "center", behavior: "smooth" });
+    setTimeout(() => {
+      if (target === el && bubble.classList.contains("away")) {
+        hide();
+        safeSend({ type: "target-lost" });
+      }
+    }, 900);
+  });
 
   // Elements that escape their ancestors' clipping: top-layer popovers/dialogs and position:fixed boxes
   // (e.g. a flyout menu that lives inside a scrolling sidebar in the DOM but is drawn over the page).
@@ -678,14 +692,23 @@
     const c = clipRect();
     const vis = { left: Math.max(r.left, c.left), top: Math.max(r.top, c.top), right: Math.min(r.right, c.right), bottom: Math.min(r.bottom, c.bottom) };
     if (++frame % 6 === 0) {
-      // Only the control itself can be "covered"; a hover-only control's row is often partly overlapped by
-      // its own expanded details, which isn't a reason to send the user scrolling.
-      const cx = (vis.left + vis.right) / 2, cy = (vis.top + vis.bottom) / 2;
-      covered = el === target && vis.right > vis.left && vis.bottom > vis.top && !onTop(el, cx, cy);
+      // Covered = most of five points across the control are under something else (one point at the
+      // centre was fooled by a passing tooltip). Only the control itself counts: a hover-only control's
+      // row is often overlapped by its own expanded details.
+      covered = false;
+      if (el === target && vis.right > vis.left && vis.bottom > vis.top) {
+        const w = vis.right - vis.left, h = vis.bottom - vis.top;
+        const pts = [[0.5, 0.5], [0.2, 0.25], [0.8, 0.25], [0.2, 0.75], [0.8, 0.75]];
+        const hidden = pts.filter(([fx, fy]) => !onTop(el, vis.left + w * fx, vis.top + h * fy)).length;
+        covered = hidden >= 4;
+      }
     }
-    const away = vis.right - vis.left < 4 || vis.bottom - vis.top < Math.min(8, r.height / 2) || covered;
-    bubble.classList.toggle("away", away);
-    if (away) {
+    const clipped = vis.right - vis.left < 4 || vis.bottom - vis.top < Math.min(8, r.height / 2);
+    bubble.classList.toggle("away", clipped);
+    bubble.classList.toggle("covered", !clipped && covered);
+    ring.classList.toggle("covered", !clipped && covered);
+    if (!clipped && covered) $s(".scroll-text").textContent = "Something on the page is covering it. Close it to continue.";
+    if (clipped) {
       // Scrolled out of its container (or covered): no ring on the wrong thing; point at the
       // container's edge in the direction of the target instead.
       ring.style.opacity = "0";
