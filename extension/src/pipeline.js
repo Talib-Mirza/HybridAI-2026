@@ -65,11 +65,40 @@ export function hasKeywordHit(target, items) {
 
 const norm = (s) => (s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 
+/**
+ * Could this control be the kind of thing the plan described? Strict only where names collide in
+ * practice: a plan's "Settings" tab must not land on the app's "Settings" navigation item, and a form
+ * field must be something you can type in or toggle.
+ */
+export function kindFits(kind, item) {
+  if (!kind || !item) return true;
+  const nav = /navigation/.test(item.context || "");
+  const field = /^(textbox|combobox|select|checkbox|switch|radio|searchbox|spinbutton)$/.test(item.role);
+  switch (kind) {
+    case "tab":
+      return item.role === "tab" || (!nav && /^(link|button)$/.test(item.role));
+    case "field":
+      return field;
+    case "menu item":
+      // An option in a popup menu a previous step opened, never the app's always-visible navigation.
+      return !field && !nav;
+    case "row":
+      // An item in a list: the row itself or the link that names it, not an icon button in its cells.
+      return item.role === "row" || item.role === "link" || item.role === "treeitem" || item.role === "option";
+    default:
+      // Planners blur navigation / button / row; only clear mismatches count (typing into a link).
+      return !field || kind === "navigation";
+  }
+}
+
 /** Rung 1 of the ladder: an exact visible-label match needs no model at all. */
-export function exactMatch(target, items) {
+export function exactMatch(target, items, kind = null) {
   const t = norm(target);
   if (!t) return null;
-  return items.find((it) => norm(it.label) === t && !/disabled|current|selected/.test(it.state)) || null;
+  const hits = items.filter((it) => norm(it.label) === t && !/disabled|current|selected/.test(it.state) && kindFits(kind, it));
+  // Same name twice (the app's "Settings" menu and this page's "Settings" tab): the page's own control
+  // is the more specific one.
+  return hits.find((it) => it.main) || hits[0] || null;
 }
 
 /** The step's target is where the user already is (the current nav link or the selected tab). */
@@ -96,7 +125,9 @@ export function looksDone(goal, item) {
  */
 export function specificToGoal(goal, label, outline) {
   const topic = new Set(words(`${outline.title} ${outline.headings.join(" ")}`).map(stem));
-  const goalStems = [...queryStems(goal)].filter((st) => !topic.has(st));
+  // The user's own words only: synonyms help find candidates, but aren't evidence ("add" ≈ "new" matched
+  // "opens in new tab").
+  const goalStems = words(goal).map(stem).filter((st) => !topic.has(st));
   const labelStems = new Set(words(label).map(stem));
   return goalStems.some((st) => labelStems.has(st));
 }
@@ -142,7 +173,9 @@ function compactLines(cands) {
  * flags (no free-text explanation or self-rated confidence); the bubble text comes from the label or plan.
  */
 export async function pickElement({ question, outline, forceCloud = false }) {
-  const cands = shortlist(question, outline.items, 30);
+  // Doc links are never the control to use, unless the user is asking for docs.
+  const usable = /\bdocs?\b|documentation|learn more/i.test(question) ? outline.items : outline.items.filter((it) => !DOC_LINK.test(it.label));
+  const cands = shortlist(question, usable, 30);
   if (!cands.length) return { elementId: "none", source: "none", candidates: 0, total: 0 };
 
   const schema = {
@@ -182,7 +215,7 @@ The user wants: "${question}"
 Controls on this page (id | role | label | context | state):
 ${compactLines(cands).join("\n")}
 
-Choose the control the user should use NEXT. Prefer one whose label matches the request. State "current" is the page the user is already on: never choose it. State "hidden" or "on hover" controls exist but need a menu opened or the row hovered; you may choose them. If the needed control isn't listed but probably sits inside a collapsed menu (state "collapsed"), choose that menu. If nothing helps, choose "none".
+Choose the control the user should use NEXT. Prefer one whose label matches the request. If the request says it's a row, choose the row or the link that names the item, not an icon or button inside the row. State "current" is the page the user is already on: never choose it. State "hidden" or "on hover" controls exist but need a menu opened or the row hovered; you may choose them. If the needed control isn't listed but probably sits inside a collapsed menu (state "collapsed"), choose that menu. If nothing helps, choose "none".
 completesGoal: true only if using this control directly does what the user wants, on this page.
 opensMenu: true if you chose a collapsed menu to reveal what the user needs.`;
 
@@ -239,7 +272,7 @@ Visible controls on this page (role | label | context | state; personal values a
 ${nav.join("\n")}
 ${replan}
 
-Return the steps as JSON: each step has "instruction" (short imperative sentence for the user), "target" (the control's visible label exactly as it appears on screen) and "where" (where on screen it is).
+Return the steps as JSON: each step has "instruction" (short imperative sentence for the user), "target" (the control's visible label exactly as it appears on screen), "kind" (navigation = an item in the app's sidebar or top menu; tab = a tab on the page; button; row = a row in a table or list; menu item = an option inside a menu that a previous step opened; field = something to type in or toggle) and "where" (where on screen it is).
 
 Example of a complete route in a DIFFERENT app (goal "invite a teammate to my workspace", starting on the dashboard, where the left navigation has collapsed sections "Workspace" and "Billing"):
 1. target "Acme Team" — open the workspace from its card
@@ -256,6 +289,7 @@ Rules:
 - Controls with state "collapsed" are menus or sections whose items are NOT listed above. Apps reorganise their navigation into such groups, so if the item you need isn't listed, open the collapsed group whose name best fits it (e.g. a "Users" page usually sits under a group like "Admin" or "People"), then continue with the item itself.
 - State "current" or "selected" marks where the user already is: never make it a step.
 - Actions on one specific item (an app, user, file, key) usually live in that item's own row menu, e.g. a "⋮", "More" or "Open menu for <item>" button, often shown only on hover. Include the step that opens it before the action itself.
+- If this is the landing page of a product that isn't set up yet (a "Get started", "Set up" or "Enable" button, and none of the product's own tabs or settings), setting it up is the first step: target that button, and say in the instruction that it turns the product on. The product's own tabs and settings only appear after that.
 - Navigate with the app's own navigation, tabs and buttons. Don't route through a search box unless no listed control or collapsed group could lead there.
 - If a step means opening a project, use the project's name exactly as shown on its card as the target.
 - Never invent values or secrets. Stop before any final irreversible confirmation and tell the user to review it themselves.`;
@@ -275,9 +309,10 @@ Rules:
             properties: {
               instruction: { type: "string" },
               target: { type: "string" },
+              kind: { type: "string", enum: ["navigation", "tab", "button", "row", "menu item", "field"] },
               where: { type: "string" },
             },
-            required: ["instruction", "target", "where"],
+            required: ["instruction", "target", "kind", "where"],
           },
         },
       },
@@ -499,12 +534,26 @@ export async function chooseMode({ question, title = "" }) {
     },
     { timeout: 20_000 }
   );
-  const prompt = `You route requests for Waypoint, an in-page guide for web apps.
+  // Measured on Nano against 33 labelled requests: spelling out what each mode can do, a tie-breaker
+  // and a few examples took routing from 32/33 to 33/33. Keep the examples distinct from real tests.
+  const prompt = `You are the router for Waypoint, a browser extension that helps people use complex web apps. Waypoint can do exactly two things:
+
+GUIDE: takes the user to a goal, one click at a time. It can move across pages: it plans a route through menus, tabs and buttons and highlights each control to click until the task is reached. Use it when the user wants to do, change, create, set up, enable, delete, open, find, go to, manage or monitor something, including "how do I…" questions and bare names of a place or feature (for example "billing alerts").
+
+EXPLAIN: stays on the current page and explains what its controls, settings, statuses and terms mean, in popups the user steps through. It never clicks or navigates. Use it when the user wants to understand: "what is / does / are…", "what does X mean", "why is…", "what's the difference between…", "what am I looking at", "how does X work", or a tour of this page.
+
+If a request could be either, decide whether the user wants to end up somewhere or change something (GUIDE) or only to learn (EXPLAIN). "How do I…" is GUIDE. "How does … work" is EXPLAIN.
+
+Examples:
+"Rotate my API key" → guide
+"how do I change the billing account" → guide
+"Logs Explorer" → guide
+"what does Unverified requests mean" → explain
+"show me around this page" → explain
+"why is this button greyed out" → explain
+
 Page title: ${title}
 User's request: "${question}"
-
-mode "guide": they want to DO something or GO somewhere (set something up, change a setting, find a page or feature, "how do I…"). Waypoint will point at what to click, step by step.
-mode "explain": they want to UNDERSTAND what something on this page is, means or does, or want a tour or walkthrough of the page itself ("walk me through this page", "what's all this?"). Waypoint will explain controls without them clicking anything.
 Choose the mode.`;
   const t0 = performance.now();
   const r = (await model.generateContent(prompt)).response;

@@ -148,7 +148,15 @@
       return first ? textOf(first).slice(0, 60) : "";
     }
     const aria = el.getAttribute("aria-label");
-    if (aria) return clean(aria);
+    if (aria) {
+      // Some sites build aria-labels from textContent, so an icon's ligature leaks in ("settingsHow do I…").
+      let a = clean(aria);
+      for (const ic of el.querySelectorAll(ICON)) {
+        const t = (ic.textContent || "").trim();
+        if (t && a.startsWith(t) && a.length > t.length) a = a.slice(t.length).trim();
+      }
+      return a;
+    }
     const lb = el.getAttribute("aria-labelledby");
     if (lb) {
       const root = el.getRootNode();
@@ -623,8 +631,10 @@
     const c = clipRect();
     const vis = { left: Math.max(r.left, c.left), top: Math.max(r.top, c.top), right: Math.min(r.right, c.right), bottom: Math.min(r.bottom, c.bottom) };
     if (++frame % 6 === 0) {
+      // Only the control itself can be "covered"; a hover-only control's row is often partly overlapped by
+      // its own expanded details, which isn't a reason to send the user scrolling.
       const cx = (vis.left + vis.right) / 2, cy = (vis.top + vis.bottom) / 2;
-      covered = vis.right > vis.left && vis.bottom > vis.top && !onTop(el, cx, cy);
+      covered = el === target && vis.right > vis.left && vis.bottom > vis.top && !onTop(el, cx, cy);
     }
     const away = vis.right - vis.left < 4 || vis.bottom - vis.top < Math.min(8, r.height / 2) || covered;
     bubble.classList.toggle("away", away);

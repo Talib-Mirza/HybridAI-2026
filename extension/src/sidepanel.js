@@ -1,5 +1,5 @@
 import "./sidepanel.css";
-import { pickElement, planRoute, hasKeywordHit, exactMatch, alreadyHere, looksDone, specificToGoal, namesNavTarget, navTarget, looksLikeExplain, pickTour, explainControl, chooseMode } from "./pipeline.js";
+import { pickElement, planRoute, hasKeywordHit, exactMatch, kindFits, alreadyHere, looksDone, specificToGoal, namesNavTarget, navTarget, looksLikeExplain, pickTour, explainControl, chooseMode } from "./pipeline.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -337,7 +337,7 @@ async function escalate(goal, outline, gen, { pick = null, failed = null, unfini
   log({
     kind: "in_cloud",
     title: `Route ${failed || unfinished ? "re-planned" : "planned"} (${plan.steps.length} steps)`,
-    detail: `${plan.model}${plan.grounded ? " · grounded with Google Search" : ""} · ${plan.steps.map((s) => s.target).join(" → ")}`,
+    detail: `${plan.model}${plan.grounded ? " · grounded with Google Search" : ""} · ${plan.steps.map((s) => `${s.target}${s.kind ? ` (${s.kind})` : ""}`).join(" → ")}`,
     sent: plan.sent,
     ms: plan.ms,
   });
@@ -412,8 +412,12 @@ async function runStep(gen, attempt, run) {
     // Rung 1, no AI: an exact label match for this step or up to two steps ahead. Take the NEAREST step
     // that is on screen: a stale planner step that isn't here (or a menu that's already open) is skipped
     // for free, but a step that is here is never jumped over.
+    // Skipping is for stale navigation only: a settings/field step is never jumped over (that would
+    // point at "Save" before anything was set).
+    const skippable = (st) => !st.kind || /^(navigation|tab|menu item)$/.test(st.kind);
     for (let j = state.i; j <= Math.min(state.i + 2, state.steps.length - 1); j++) {
-      const hit = exactMatch(state.steps[j].target, outline.items);
+      if (j > state.i && !skippable(state.steps[j - 1])) break;
+      const hit = exactMatch(state.steps[j].target, outline.items, state.steps[j].kind);
       if (!hit) continue;
       if (hit.state.includes("expanded") && j < state.steps.length - 1) continue; // already open
       const where = placement(outline, hit.id);
@@ -471,9 +475,13 @@ async function runStep(gen, attempt, run) {
       tried = true;
       status(`Step ${j + 1}: looking for "${step.target}"…`);
       busy(`Looking for "${step.target}"…`);
-      const res = await locate(`"${step.target}" (${step.instruction}; ${step.where})`, gen, run);
+      const res = await locate(`"${step.target}"${step.kind ? `, a ${step.kind}` : ""} (${step.instruction}; ${step.where})`, gen, run);
       if (!res || stale()) return;
       const pickedItem = res.outline.items.find((it) => it.id === res.pick.elementId);
+      if (res.found && !kindFits(step.kind, pickedItem) && !res.where.reveal) {
+        log({ kind: "info", title: `Not "${pickedItem.label}"`, detail: `The plan wants a ${step.kind}; that's a different kind of control with the same name.` });
+        continue;
+      }
       if (res.found && /current|selected/.test(pickedItem?.state || "")) {
         // Nano pointed at where the user already is: that step is done.
         log({ kind: "info", title: `Already on "${pickedItem.label}"`, detail: "Skipped: nothing to click." });
@@ -826,8 +834,15 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
     const key = `${fromTab}|${msg.q}`;
     if (key === lastCommand.key && Date.now() - lastCommand.at < 2000) return;
     lastCommand = { key, at: Date.now() };
-    $("q").value = msg.q;
-    handle(msg.q, fromTab);
+    devStale().then((stale) => {
+      if (stale) {
+        try { sessionStorage.setItem("waypoint-pending", JSON.stringify({ q: msg.q, tab: fromTab })); } catch {}
+        devReload();
+        return;
+      }
+      $("q").value = msg.q;
+      handle(msg.q, fromTab);
+    });
     return;
   }
   if (fromTab !== state.tabId) return;
@@ -917,18 +932,36 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
 // Reload only this panel and re-inject the content script; a full chrome.runtime.reload() would close
 // the side panel, and Chrome only reopens it on a user click. (manifest/background changes still need
 // a manual reload from chrome://extensions.)
+// Chrome throttles timers in a background panel, so a test request also checks for a newer build
+// first; if there is one, the panel reloads and replays the request (dev builds only).
+const readBuild = () => fetch(chrome.runtime.getURL("build-id.txt"), { cache: "no-store" }).then((r) => r.text()).catch(() => "");
+let devBuild = "";
+async function devReload() {
+  // Every web tab; injection only succeeds where Waypoint is allowed.
+  const tabs = await chrome.tabs.query({ url: ["https://*/*", "http://*/*"] });
+  for (const t of tabs) {
+    await chrome.scripting.executeScript({ target: { tabId: t.id }, files: ["content.js"] }).catch(() => {});
+  }
+  location.reload();
+}
+async function devStale() {
+  if (!devBuild) return false;
+  const now = await readBuild();
+  return !!now && now !== devBuild;
+}
 (async () => {
-  const read = () => fetch(chrome.runtime.getURL("build-id.txt"), { cache: "no-store" }).then((r) => r.text()).catch(() => "");
-  const first = await read();
-  if (!first) return;
+  devBuild = await readBuild();
+  if (!devBuild) return;
   setInterval(async () => {
-    const now = await read();
-    if (!now || now === first) return;
-    // Every web tab; injection only succeeds where Waypoint is allowed.
-    const tabs = await chrome.tabs.query({ url: ["https://*/*", "http://*/*"] });
-    for (const t of tabs) {
-      await chrome.scripting.executeScript({ target: { tabId: t.id }, files: ["content.js"] }).catch(() => {});
-    }
-    location.reload();
+    if (await devStale()) devReload();
   }, 1500);
+  // A test request that arrived just before a reload.
+  try {
+    const pending = JSON.parse(sessionStorage.getItem("waypoint-pending") || "null");
+    sessionStorage.removeItem("waypoint-pending");
+    if (pending?.q && pending.tab != null) setTimeout(() => {
+      $("q").value = pending.q;
+      handle(pending.q, pending.tab);
+    }, 800);
+  } catch {}
 })();
