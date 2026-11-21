@@ -241,7 +241,7 @@ async function reportDone(item, where) {
   if (!evidence) return false;
   log({ kind: "info", title: "Already done", detail: `"${item.label}" shows "${evidence}".` });
   state.mode = "idle";
-  await show(where, { step: "Already done", text: `"${item.label}" already shows "${evidence}".`, why: "Nothing to change.", src: "Status check · no AI call" });
+  await show(where, { step: "Already done", text: `"${item.label}" already shows "${evidence}".`, why: "Nothing to change." });
   status("Already done: nothing to change.");
   return true;
 }
@@ -268,7 +268,7 @@ async function ask(question, tabId) {
       if ((await send(tabId, { type: "check", id: where.showId }))?.ok && gen === state.gen) {
         log({ kind: "info", title: `Exact match: "${navHit.label}"`, detail: "Found by label, no AI call needed." });
         state.mode = "single";
-        const bubble = { step: "Here", text: where.reveal ? "" : `Use "${navHit.label}".`, src: "Exact label match · no AI call" };
+        const bubble = { step: "Here", text: where.reveal ? "" : `Use "${navHit.label}".` };
         state.single = { label: navHit.label, bubble };
         await show(where, bubble);
         status(where.reveal ? "It's inside a collapsed menu on this page." : "Found it on this page.");
@@ -393,7 +393,7 @@ async function runStep(gen, attempt, run) {
       renderSteps();
       if (await reportDone(hit, where)) return;
       state.steps[j].shown = hit.label;
-      await show(where, { step: of(), text: state.steps[j].instruction, src: "Exact label match · no AI call" });
+      await show(where, { step: of(), text: state.steps[j].instruction });
       status(`${of()}: ${where.reveal ? where.revealText : state.steps[j].instruction}`);
       return;
     }
@@ -414,7 +414,7 @@ async function runStep(gen, attempt, run) {
       log({ kind: "info", title: `Back to step ${j + 1}`, detail: `"${hit.label}" closed again; reopen it to continue.` });
       state.i = j;
       renderSteps();
-      await show(where, { step: of(), text: `Reopen "${hit.label}" to continue.`, why: state.steps[state.i + 1]?.instruction || "", src: "Exact label match · no AI call" });
+      await show(where, { step: of(), text: `Reopen "${hit.label}" to continue.`, why: state.steps[state.i + 1]?.instruction || "" });
       status(`${of()}: reopen "${hit.label}" to continue.`);
       return;
     }

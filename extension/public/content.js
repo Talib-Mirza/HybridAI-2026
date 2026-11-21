@@ -365,8 +365,14 @@
       .bubble .why{color:#c9d2f0;font-size:12px;margin-top:6px}
       .bubble .why:empty,.bubble .text:empty{display:none}
       .bubble .src{color:#7f8bb0;font-size:10.5px;margin-top:8px}
-      .bubble .scroll{display:none;margin-top:8px;align-items:center;gap:8px;color:#ffd78a;font-size:12px}
+      .bubble .src:empty{display:none}
+      .bubble .scroll{display:none;margin-top:10px;padding:8px 10px;align-items:center;gap:10px;color:#ffd78a;font-size:14px;font-weight:600;background:rgba(255,215,138,.1);border-radius:8px}
       .bubble.away .scroll{display:flex}
+      .scroll-icon{flex:none;width:22px;height:22px;animation:nudge 1.1s ease-in-out infinite}
+      .bubble.up .scroll-icon{transform:rotate(180deg);animation-name:nudge-up}
+      .scroll .btn{margin-left:auto}
+      @keyframes nudge{0%,100%{translate:0 -2px}50%{translate:0 3px}}
+      @keyframes nudge-up{0%,100%{translate:0 2px}50%{translate:0 -3px}}
       .x{position:absolute;top:6px;right:8px;cursor:pointer;color:#9fb3ff;font-size:14px;background:none;border:0;padding:2px 4px;border-radius:4px}
       .x:hover,.x:focus-visible{background:rgba(159,179,255,.15);outline:none}
       .btn{font:600 12px system-ui,-apple-system,sans-serif;border:0;border-radius:6px;padding:4px 10px;cursor:pointer;background:#4f7cff;color:#fff}
@@ -382,13 +388,17 @@
       .pill.done .dot{display:block;background:#3ccf8e;animation:none}
       @keyframes in{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
       @keyframes pulse{0%,100%{opacity:.35}50%{opacity:1}}
-      @media (prefers-reduced-motion:reduce){.ring,.bubble,.pill,.pill .dot{transition:none;animation:none}}
+      @media (prefers-reduced-motion:reduce){.ring,.bubble,.pill,.pill .dot,.scroll-icon{transition:none;animation:none}}
     </style>
     <div class="ring"></div>
     <div class="bubble" role="dialog" aria-label="Waypoint guide">
       <button class="x" title="Pause the guide" aria-label="Pause the guide">×</button>
       <div class="step"></div><div class="text"></div><div class="why"></div>
-      <div class="scroll"><span class="scroll-text"></span><button class="btn show-me">Show me</button></div>
+      <div class="scroll">
+        <svg class="scroll-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="7" y="1.5" width="10" height="14" rx="5"/><path d="M12 5v3"/><path d="m8.5 18.5 3.5 3 3.5-3"/>
+        </svg>
+        <span class="scroll-text"></span><button class="btn show-me">Show me</button></div>
       <div class="src"></div><div class="arrow"></div>
     </div>
     <div class="pill" role="status" aria-live="polite"><span class="dot"></span><span class="pill-text"></span>
@@ -558,7 +568,8 @@
       // container's edge in the direction of the target instead.
       ring.style.opacity = "0";
       const down = r.top > (c.top + c.bottom) / 2;
-      $s(".scroll-text").textContent = down ? "↓ Scroll down to find it" : "↑ Scroll up to find it";
+      $s(".scroll-text").textContent = down ? "Scroll down to find it" : "Scroll up to find it";
+      bubble.classList.toggle("up", !down);
       const edge = { left: Math.max(c.left, Math.min(r.left, c.right - r.width)), right: 0, top: down ? c.bottom : c.top, bottom: down ? c.bottom : c.top };
       edge.right = edge.left + Math.min(r.width, c.right - c.left);
       anchorBubble(edge, down ? "above" : "below");
