@@ -1,5 +1,5 @@
 import "./sidepanel.css";
-import { pickElement, planRoute, hasKeywordHit, exactMatch, alreadyHere, looksDone, specificToGoal, namesNavTarget, navTarget, looksLikeExplain, pickTour, explainControl } from "./pipeline.js";
+import { pickElement, planRoute, hasKeywordHit, exactMatch, alreadyHere, looksDone, specificToGoal, namesNavTarget, navTarget, looksLikeExplain, pickTour, explainControl, chooseMode } from "./pipeline.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -744,29 +744,50 @@ $("end").addEventListener("click", endGuide);
 
 // ---------- Events ----------
 
-// ---------- Guide me / Explain switch ----------
-// Explain is picked automatically when the request reads like a question about the page ("What does…",
-// "Explain…", "Walk me through…"), unless the user chose a mode themselves.
+// ---------- Routing ----------
+// Gemini decides whether the request is "guide" (do / go somewhere) or "explain" (understand the page),
+// through a one-field schema. The wording check is only a fallback if no model is reachable.
 
-let uiMode = "guide";
-let modeChosen = false;
-const PLACEHOLDER = {
-  guide: "What do you want to do? e.g. Create a service account key",
-  explain: "What should I explain? e.g. What do the settings on this page do?",
-};
-function setMode(m, byUser = false) {
-  uiMode = m;
-  if (byUser) modeChosen = true;
-  document.querySelectorAll(".seg button").forEach((b) => b.setAttribute("aria-checked", String(b.dataset.mode === m)));
-  $("ask").textContent = m === "explain" ? "Explain" : "Guide me";
-  $("q").placeholder = PLACEHOLDER[m];
+let routeToken = 0;
+async function handle(question, tabId) {
+  const token = ++routeToken;
+  // Stop whatever was running; the new request takes over the page.
+  state.gen++;
+  clearTimeout(stepTimer);
+  Object.assign(state, { tabId, mode: "idle", tour: null, single: null });
+  setPaused(false);
+  renderSteps();
+  status("Thinking…");
+  try {
+    await ensureFresh(tabId);
+    await send(tabId, { type: "hide" });
+    busy("Thinking…");
+    const title = (await send(tabId, { type: "outline" }))?.title || "";
+    let mode;
+    try {
+      const r = await chooseMode({ question, title });
+      mode = r.mode;
+      log({
+        kind: r.source === "in_cloud" ? "in_cloud" : "on_device",
+        title: mode === "explain" ? "Decided: explain the page" : "Decided: guide you there",
+        detail: `${SOURCE_LABEL[r.source] || r.source} chose "${mode}" for this request.`,
+        sent: r.sent,
+        ms: r.ms,
+      });
+    } catch (e) {
+      mode = looksLikeExplain(question) ? "explain" : "guide";
+      log({ kind: "info", title: `Decided: ${mode} (fallback)`, detail: `No model reachable (${e?.message || e}); chose from the wording.` });
+    }
+    if (token !== routeToken) return;
+    if (mode === "explain") explain(question, tabId);
+    else ask(question, tabId);
+  } catch (e) {
+    if (token !== routeToken) return;
+    chip(null);
+    status(`Error: ${e?.message || e}`);
+  }
 }
-document.querySelectorAll(".seg button").forEach((b) => b.addEventListener("click", () => setMode(b.dataset.mode, true)));
-$("q").addEventListener("input", () => {
-  const q = $("q").value;
-  if (!q.trim()) modeChosen = false;
-  if (!modeChosen) setMode(looksLikeExplain(q) ? "explain" : "guide");
-});
+
 $("q").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
@@ -785,8 +806,7 @@ $("ask-form").addEventListener("submit", async (e) => {
       : "Open the page you need help with first.";
     return;
   }
-  if (uiMode === "explain") explain(q, tabId);
-  else ask(q, tabId);
+  handle(q, tabId);
 });
 
 $("replan").addEventListener("click", async () => {
@@ -807,13 +827,7 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
     if (key === lastCommand.key && Date.now() - lastCommand.at < 2000) return;
     lastCommand = { key, at: Date.now() };
     $("q").value = msg.q;
-    if (looksLikeExplain(msg.q)) {
-      setMode("explain");
-      explain(msg.q, fromTab);
-    } else {
-      setMode("guide");
-      ask(msg.q, fromTab);
-    }
+    handle(msg.q, fromTab);
     return;
   }
   if (fromTab !== state.tabId) return;

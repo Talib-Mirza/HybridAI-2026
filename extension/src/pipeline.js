@@ -467,3 +467,47 @@ Write 1 or 2 short sentences, at most 40 words: what it does and when or why som
     return await run(InferenceMode.ONLY_IN_CLOUD, base + rules);
   }
 }
+
+// ---------- Routing: guide or explain ----------
+
+/**
+ * Gemini decides what kind of help the request needs, via a one-field schema. It only needs the
+ * request and the page title (not the page), so it's a ~0.7 s on-device call; if Nano isn't available
+ * the cloud gets just those two (title redacted).
+ */
+export async function chooseMode({ question, title = "" }) {
+  const schema = {
+    type: "object",
+    properties: { mode: { type: "string", enum: ["guide", "explain"] } },
+    required: ["mode"],
+  };
+  const model = getGenerativeModel(
+    ai,
+    {
+      mode: InferenceMode.PREFER_ON_DEVICE,
+      inCloudParams: {
+        model: CLOUD_MODEL,
+        generationConfig: { responseMimeType: "application/json", responseJsonSchema: schema, temperature: 0 },
+      },
+      onDeviceParams: {
+        createOptions: {
+          expectedInputs: [{ type: "text", languages: ["en"] }],
+          expectedOutputs: [{ type: "text", languages: ["en"] }],
+        },
+        promptOptions: { responseConstraint: schema },
+      },
+    },
+    { timeout: 20_000 }
+  );
+  const prompt = `You route requests for Waypoint, an in-page guide for web apps.
+Page title: ${title}
+User's request: "${question}"
+
+mode "guide": they want to DO something or GO somewhere (set something up, change a setting, find a page or feature, "how do I…"). Waypoint will point at what to click, step by step.
+mode "explain": they want to UNDERSTAND what something on this page is, means or does, or want a tour or walkthrough of the page itself ("walk me through this page", "what's all this?"). Waypoint will explain controls without them clicking anything.
+Choose the mode.`;
+  const t0 = performance.now();
+  const r = (await model.generateContent(prompt)).response;
+  const mode = JSON.parse(r.text()).mode === "explain" ? "explain" : "guide";
+  return { mode, source: r.inferenceSource, ms: Math.round(performance.now() - t0), sent: prompt };
+}

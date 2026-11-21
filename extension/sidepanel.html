@@ -21,13 +21,9 @@
     </section>
 
     <form id="ask-form">
-      <div class="seg" role="radiogroup" aria-label="What should Waypoint do?">
-        <button type="button" role="radio" aria-checked="true" data-mode="guide">Guide me</button>
-        <button type="button" role="radio" aria-checked="false" data-mode="explain">Explain</button>
-      </div>
-      <textarea id="q" rows="3" placeholder="What do you want to do? e.g. Create a service account key"></textarea>
+      <textarea id="q" rows="3" placeholder="Ask to get something done (“Create a service account key”) or to understand the page (“What do these settings do?”)"></textarea>
       <div class="row">
-        <button type="submit" id="ask">Guide me</button>
+        <button type="submit" id="ask">Ask</button>
         <label class="toggle"><input type="checkbox" id="force-cloud" /> Cloud only</label>
       </div>
     </form>
