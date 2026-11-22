@@ -341,7 +341,9 @@
       const r = el.getBoundingClientRect();
       // Something else drawn on top of it right now (e.g. page content behind an open drawer or dialog).
       const inView = r.bottom > 0 && r.top < innerHeight && r.right > 0 && r.left < innerWidth;
-      const covered = inView && !onTop(el, Math.min(Math.max(r.left + r.width / 2, 1), innerWidth - 1), Math.min(Math.max(r.top + r.height / 2, 1), innerHeight - 1));
+      // Centre plus four inner points (as the live check does): half under a drawer counts as covered.
+      const at = (fx, fy) => onTop(el, Math.min(Math.max(r.left + r.width * fx, 1), innerWidth - 1), Math.min(Math.max(r.top + r.height * fy, 1), innerHeight - 1));
+      const covered = inView && (!at(0.5, 0.5) || [[0.25, 0.3], [0.75, 0.3], [0.25, 0.7], [0.75, 0.7]].filter(([fx, fy]) => !at(fx, fy)).length >= 2);
       items.push({
         id,
         role: roleOf(el),
@@ -929,6 +931,21 @@
 
   let frame = 0;
   let covered = false;
+  let twinCheckedAt = 0;
+  const sameLabel = (a, b) => a.toLowerCase().replace(/\s+/g, " ").trim() === b.toLowerCase().replace(/\s+/g, " ").trim();
+  /** A control with the same label as `el` that is fully in view and on top (not covered), if any. */
+  function visibleTwin(el) {
+    const label = labelOf(el);
+    if (!label) return null;
+    for (const c of deepQueryAll(document, INTERACTIVE)) {
+      if (c === el || c.closest("#waypoint-host") || !isVisible(c) || !sameLabel(labelOf(c) || "", label)) continue;
+      const r = c.getBoundingClientRect();
+      if (r.width < 4 || r.height < 4 || r.bottom < 0 || r.top > innerHeight || r.right < 0 || r.left > innerWidth) continue;
+      const pts = [[0.5, 0.5], [0.25, 0.3], [0.75, 0.3], [0.25, 0.7], [0.75, 0.7]].filter(([fx, fy]) => onTop(c, r.left + r.width * fx, r.top + r.height * fy)).length;
+      if (pts >= 4) return c;
+    }
+    return null;
+  }
   function place() {
     raf = requestAnimationFrame(place);
     if (!target) return;
@@ -970,6 +987,16 @@
         const hiddenAt = (fx, fy) => !onTop(el, vis.left + w * fx, vis.top + h * fy);
         const corners = [[0.25, 0.3], [0.75, 0.3], [0.25, 0.7], [0.75, 0.7]].filter(([fx, fy]) => hiddenAt(fx, fy)).length;
         covered = hiddenAt(0.5, 0.5) && corners >= 3;
+        // Same label twice ("View all products" in an open drawer and on the page behind it): the one
+        // that's covered isn't the one the user can click. Move to the twin that's in plain sight.
+        if (covered && performance.now() - twinCheckedAt > 500) {
+          twinCheckedAt = performance.now();
+          const twin = visibleTwin(el);
+          if (twin) {
+            target = twin;
+            covered = false;
+          }
+        }
       }
     }
     const clipped = vis.right - vis.left < 4 || vis.bottom - vis.top < Math.min(8, r.height / 2);
