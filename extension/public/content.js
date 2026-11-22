@@ -922,10 +922,12 @@
 
   function visionNeed(el) {
     const has = (sel) => el.matches(sel) || !!el.querySelector?.(sel);
-    if (has("canvas")) return "chart";
+    const r = el.getBoundingClientRect();
+    const big = r.width > 120 && r.height > 60; // charts are chart-sized; a "chart legend" button isn't
+    if (big && has("canvas")) return "chart";
     const svgs = [el.matches("svg") ? el : null, ...(el.querySelectorAll?.("svg") || [])].filter(Boolean);
     if (svgs.some((sv) => { const b = sv.getBoundingClientRect(); return b.width > 90 && b.height > 45; })) return "chart";
-    if (/chart|graph|sparkline|plot/i.test(`${el.className?.baseVal ?? el.className} ${el.getAttribute("aria-label") || ""}`)) return "chart";
+    if (big && /chart|graph|sparkline|plot/i.test(`${el.className?.baseVal ?? el.className} ${el.getAttribute("aria-label") || ""}`)) return "chart";
     const imgs = [el.matches("img") ? el : null, ...(el.querySelectorAll?.("img") || [])].filter(Boolean);
     if (imgs.some((im) => { const b = im.getBoundingClientRect(); return b.width > 64 && b.height > 48; })) return "image";
     // Icon-only: no words, just an icon.
@@ -958,7 +960,16 @@
   }
   function pickName(el, kind) {
     if (kind === "Chart" || kind === "Image") {
-      // Charts' aria-labels are often long descriptions; their heading is the name people use.
+      // A chart's own label usually starts with its name ("Traffic This chart is described by…").
+      const own = (el.getAttribute("aria-label") || el.querySelector?.("[aria-label]")?.getAttribute("aria-label") || "").split(/\s+(?:This|The)\s+(?:chart|graph|image)\b|[.:\n]/i)[0].trim();
+      if (own && own.length <= 40) return clean(own);
+      // Otherwise the nearest visible title around it (a card's header, a panel's heading).
+      for (let n = el, k = 0; n && k < 5; n = parentOf(n), k++) {
+        const t = [...(n.querySelectorAll?.("h1,h2,h3,h4,h5,[role=heading],mat-card-title,[class*=card-title],[class*=chart-title],[class*=header-title]") || [])].find(
+          (x) => !x.contains(el) && isVisible(x) && textOf(x)
+        );
+        if (t) return textOf(t).slice(0, 60);
+      }
       const under = (contextOf(el).match(/under "([^"]+)"/) || [])[1];
       // Only a heading people can see (charts often carry a visually hidden one like "Graphs").
       const h = [...(el.querySelectorAll?.("h1,h2,h3,h4,[role=heading]") || [])].find((x) => isVisible(x) && textOf(x));
