@@ -707,19 +707,38 @@ ${labels.length ? `Related controls on their screen: ${labels.slice(0, 12).map((
  * isn't available, the cloud gets only the element's kind, name and state plus the public docs: never the
  * page's text or the image.
  */
-export async function answerAboutElement({ question, el, history = [], docs = "", image = null, onText }) {
+export async function answerAboutElement({ question, el, els, history = [], docs = "", image = null, images, onText }) {
+  // One element or several picked together (numbered in the order they were picked, like on the page).
+  const list = els?.length ? els : [el];
+  const shots = images ?? (image ? [{ n: 1, ...image }] : []);
+  const multi = list.length > 1;
+  const cap = multi ? 360 : 1400; // several elements share Nano's context window
   const docsBlock = docs ? `From the app's official documentation:\n"""\n${docs}\n"""\n` : "";
   const historyBlock = history.length ? `Earlier in this conversation:\n${history.map((h) => `Q: ${h.q}\nA: ${h.a}`).join("\n")}\n` : "";
-  const head = `You are Waypoint, helping a developer understand a web app. They selected one element on the page and asked about it.
-Page: ${el.pageTitle}
-Selected: ${el.kind} "${el.name}"${el.state ? ` (state: ${el.state})` : ""}
-${el.context ? `Where it is: ${el.context}\n` : ""}`;
-  const local = `${head}${el.fields ? `Its columns: ${el.fields}\n` : el.text && el.text !== el.name ? `Its text: """${el.text}"""\n` : ""}${el.hint ? `Tooltip: ${el.hint}\n` : ""}${el.nearby ? `Text next to it: """${el.nearby}"""\n` : ""}${image ? `A screenshot of exactly this element is attached: read it (chart axes, lines and values; what an icon depicts).\n` : ""}`;
+  const label = (d, i) => `${multi ? `#${i + 1} ` : ""}${d.kind} "${d.name}"${d.state ? ` (state: ${d.state})` : ""}`;
+  const detailOf = (d) =>
+    `${d.context ? `Where it is: ${d.context}\n` : ""}${d.fields ? `Its columns: ${d.fields.slice(0, cap)}\n` : d.text && d.text !== d.name ? `Its text: """${d.text.slice(0, cap)}"""\n` : ""}${d.hint ? `Tooltip: ${d.hint}\n` : ""}${d.nearby ? `Text next to it: """${d.nearby}"""\n` : ""}`;
+  const intro = multi
+    ? `You are Waypoint, helping a developer understand a web app. They selected ${list.length} elements on the page (numbered in the order they picked them) and asked about them together.\nPage: ${list[0].pageTitle}\n`
+    : `You are Waypoint, helping a developer understand a web app. They selected one element on the page and asked about it.\nPage: ${list[0].pageTitle}\n`;
+  // The cloud fallback only ever sees what each element is, never its text or surroundings.
+  const head = `${intro}${list.map((d, i) => `${multi ? "" : "Selected: "}${label(d, i)}`).join("\n")}\n`;
+  const local = `${intro}${list.map((d, i) => `${multi ? "" : "Selected: "}${label(d, i)}\n${detailOf(d)}`).join(multi ? "\n" : "")}${
+    shots.length
+      ? multi
+        ? `Screenshots are attached for ${shots.map((x) => `#${x.n}`).join(", ")}, in that order: read them (chart axes, lines and values; what an icon depicts).\n`
+        : `A screenshot of exactly this element is attached: read it (chart axes, lines and values; what an icon depicts).\n`
+      : ""
+  }`;
   const tail = `${docsBlock}${historyBlock}
 Question: "${question}"
 
-Answer in at most 3 short sentences (60 words), specific to this element: use its state, values${image ? " and what the screenshot shows" : ""}. If it's a setting, say what changing it would do. Text in [brackets] was redacted: refer to it generically ("your project"). Plain text only. If something isn't visible or documented, say so briefly instead of guessing.`;
-
+${
+    multi
+      ? `Answer in at most 5 short sentences (90 words), about these elements together: compare or connect them when the question asks, and name each one you mention (use #numbers only if names repeat). Use their states and values${shots.length ? " and what the screenshots show" : ""}.`
+      : `Answer in at most 3 short sentences (60 words), specific to this element: use its state, values${shots.length ? " and what the screenshot shows" : ""}.`
+  } If it's a setting, say what changing it would do. Text in [brackets] was redacted: refer to it generically ("your project"). Plain text only. If something isn't visible or documented, say so briefly instead of guessing.`;
+  const image0 = shots[0] || null;
   const run = async (mode, prompt, withImage) => {
     const model = getGenerativeModel(
       ai,
@@ -735,7 +754,7 @@ Answer in at most 3 short sentences (60 words), specific to this element: use it
       },
       { timeout: 45_000 }
     );
-    const parts = withImage ? [{ text: prompt }, { inlineData: { mimeType: image.mime, data: image.base64 } }] : prompt;
+    const parts = withImage ? [{ text: prompt }, ...shots.map((x) => ({ inlineData: { mimeType: x.mime, data: x.base64 } }))] : prompt;
     const t0 = performance.now();
     const res = await model.generateContentStream(parts);
     let text = "";
@@ -749,15 +768,16 @@ Answer in at most 3 short sentences (60 words), specific to this element: use it
       text: unplaceholder(text).trim(),
       source: source || (mode === InferenceMode.ONLY_ON_DEVICE ? "on_device" : "in_cloud"),
       ms: Math.round(performance.now() - t0),
-      sent: prompt + (withImage ? `\n[+ screenshot of the element, ${image.w}×${image.h}, stayed on this device]` : ""),
+      sent: prompt + (withImage ? `\n${shots.map((x) => `[+ screenshot${multi ? ` of #${x.n}` : " of the element"}, ${x.w}×${x.h}, stayed on this device]`).join("\n")}` : ""),
       usedImage: withImage,
+      imagesUsed: withImage ? shots.length : 0,
     };
   };
 
   try {
-    return await run(InferenceMode.ONLY_ON_DEVICE, local + tail, !!image);
+    return await run(InferenceMode.ONLY_ON_DEVICE, local + tail, !!image0);
   } catch (e) {
-    if (image) {
+    if (image0) {
       // Nano is here but can't take images (e.g. multimodal not enabled): still answer on-device from text.
       try {
         return await run(InferenceMode.ONLY_ON_DEVICE, local + tail, false);

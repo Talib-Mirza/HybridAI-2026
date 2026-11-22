@@ -31,6 +31,7 @@
     "[aria-expanded]", "[aria-haspopup]:not([aria-haspopup=false])",
   ].join(",");
   const ROW = "tbody tr,[role=row],mat-row";
+  const COLHEAD = "th,[role=columnheader],mat-header-cell,.mat-mdc-header-cell";
   const CELL = "td,[role=cell],[role=gridcell],[role=rowheader],mat-cell";
 
   let idToEl = new Map();
@@ -524,7 +525,26 @@
       .pick-tag .name{overflow:hidden;text-overflow:ellipsis}
       .pick-tag .eye{flex:none;color:var(--signal);font-size:11px}
       .pick-tag .unpin{display:none;flex:none;background:none;border:0;color:var(--muted);cursor:pointer;font:15px/1 var(--sans);padding:0 3px;border-radius:4px}
-      .pick-tag.pinned{pointer-events:auto}
+      .pick-tag .pstate{flex:none;font:500 10.5px var(--mono);color:var(--muted)}
+      .pick-tag.is-pinned{border-color:var(--signal)} .pick-tag.is-pinned .pstate{color:var(--signal)}
+      .pin{position:fixed;border:2px solid var(--device);background:rgba(61,220,151,.06);border-radius:7px;box-shadow:0 0 0 4px rgba(61,220,151,.16);pointer-events:none}
+      .pin-tag{position:fixed;display:flex;align-items:center;gap:6px;max-width:300px;background:var(--ink0);color:var(--text);font:500 12px/1.25 var(--sans);padding:3px 3px 3px 3px;border:1px solid rgba(61,220,151,.45);border-radius:7px;box-shadow:0 6px 18px rgba(0,0,0,.35);pointer-events:auto;white-space:nowrap}
+      .pin-n{min-width:18px;height:18px;padding:0 4px;box-sizing:border-box;border-radius:5px;background:var(--device);color:#04140c;font:700 11px/18px var(--mono);text-align:center;flex:none}
+      .pin-tag .kind{color:var(--device);text-transform:uppercase;font:500 10px var(--mono);letter-spacing:.08em;flex:none}
+      .pin-tag .name{overflow:hidden;text-overflow:ellipsis;min-width:0}
+      .pin-tag .unpin{flex:none;background:none;border:0;color:var(--muted);cursor:pointer;font:15px/1 var(--sans);padding:0 4px;border-radius:4px}
+      .pin-tag .unpin:hover,.pin-tag .unpin:focus-visible{background:var(--ink3);color:var(--text);outline:none}
+      .pickbar{position:fixed;top:12px;left:50%;transform:translateX(-50%);display:none;align-items:center;gap:8px;max-width:calc(100vw - 24px);background:var(--ink1);color:var(--text);border:1px solid rgba(61,220,151,.55);border-radius:999px;padding:5px 6px 5px 12px;font:13px/1.3 var(--sans);box-shadow:0 10px 30px rgba(0,0,0,.4);pointer-events:auto;animation:drop .16s ease-out}
+      .pickbar.open{display:flex}
+      .pickbar .pb-dot{width:9px;height:9px;border-radius:50%;background:var(--device);flex:none;animation:pulse 1.2s ease-in-out infinite}
+      .pickbar .pb-count{font:600 12px var(--mono);color:var(--device);flex:none}
+      .pickbar .pb-hint{color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+      .pickbar button{height:28px;padding:0 11px;border-radius:999px;border:1px solid var(--line);background:none;color:var(--text);cursor:pointer;font:500 12px var(--sans);flex:none}
+      .pickbar button:hover{background:var(--ink3)}
+      .pickbar .pb-done{background:var(--device);border-color:var(--device);color:#04140c;font-weight:600}
+      .pickbar .pb-done:hover{background:var(--device);filter:brightness(1.08)}
+      .pickbar.full{border-color:var(--signal)} .pickbar.full .pb-count{color:var(--signal)}
+      .ring.multi{box-shadow:0 0 0 5px rgba(61,220,151,.25)}
       .pick-tag.pinned .unpin{display:inline}
       .pick-tag .unpin:hover,.pick-tag .unpin:focus-visible{background:var(--ink3);color:var(--text);outline:none}
       /* ---- the command bar ---- */
@@ -566,13 +586,18 @@
       .grantbar{display:none;align-items:center;gap:10px;padding:9px 10px 9px 12px;border-radius:10px;background:rgba(255,178,36,.1);border:1px solid rgba(255,178,36,.35);font-size:12.5px}
       .grantbar.open{display:flex}
       .grantbar .grant-text{flex:1}
-      .chip{display:none;align-items:center;gap:8px;padding:7px 8px 7px 10px;border:1px solid rgba(61,220,151,.45);background:rgba(61,220,151,.07);border-radius:10px;min-width:0}
-      .chip.open{display:flex}
-      .chip .chip-kind{font:500 10px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--device);flex:none}
-      .chip .chip-name{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
-      .chip .chip-eye{font:11px var(--mono);color:var(--signal);flex:none}
-      .chip .chip-x{background:none;border:0;color:var(--muted);cursor:pointer;font-size:16px;line-height:1;padding:0 4px;border-radius:5px}
-      .chip .chip-x:hover{background:var(--ink3);color:var(--text)}
+      .tray{display:none;flex-wrap:wrap;align-items:center;gap:6px}
+      .tray.open{display:flex}
+      .tchip{display:inline-flex;align-items:center;gap:6px;max-width:100%;padding:3px 3px 3px 3px;border:1px solid rgba(61,220,151,.45);background:rgba(61,220,151,.07);border-radius:8px;min-width:0}
+      .tray.one .tchip{flex:1;padding:5px 4px 5px 5px}
+      .tchip .kind{font:500 10px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--device);flex:none}
+      .tchip .name{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;max-width:220px}
+      .tray.one .tchip .name{max-width:none;flex:1}
+      .tchip .eye{font:10.5px var(--mono);color:var(--signal);flex:none}
+      .tchip .tx{background:none;border:0;color:var(--muted);cursor:pointer;font-size:15px;line-height:1;padding:0 4px;border-radius:5px;flex:none}
+      .tchip .tx:hover{background:var(--ink3);color:var(--text)}
+      .tray .tact{height:26px;padding:0 10px;border-radius:8px;border:1px dashed var(--line);background:none;color:var(--muted);cursor:pointer;font:500 12px var(--sans)}
+      .tray .tact:hover{color:var(--text);border-color:var(--muted)}
       .field{position:relative}
       .q{width:100%;min-height:88px;max-height:240px;resize:none;background:var(--ink2);color:var(--text);border:1px solid var(--line);border-radius:12px;padding:14px 16px;font:17px/1.45 var(--sans);outline:none;transition:border-color .15s,box-shadow .15s}
       .q::placeholder{color:#6f8178}
@@ -613,7 +638,9 @@
     </style>
     <div class="ring"></div>
     <div class="pick"></div>
-    <div class="pick-tag" role="status" aria-live="polite"><span class="kind"></span><span class="name"></span><span class="eye" hidden title="Gemini Nano will look at it">👁</span><button class="unpin" title="Clear selection" aria-label="Clear selection">×</button></div>
+    <div class="pick-tag" role="status" aria-live="polite"><span class="kind"></span><span class="name"></span><span class="eye" hidden title="Gemini Nano will look at it">👁</span><span class="pstate"></span></div>
+    <div class="pins"></div>
+    <div class="pickbar" role="toolbar" aria-label="Picking"><span class="pb-dot"></span><span class="pb-count"></span><span class="pb-hint"></span><button class="pb-clear" type="button">Clear</button><button class="pb-done" type="button">Done</button></div>
     <div class="bubble" role="dialog" aria-label="Waypoint guide">
       <button class="x" title="Pause the guide" aria-label="Pause the guide">×</button>
       <div class="step"></div><div class="title"></div><div class="text"></div>
@@ -647,7 +674,7 @@
         <div class="keys"><span><span class="kbd">Alt</span><span class="kbd">Shift</span><span class="kbd">W</span>open</span><span><span class="kbd">Alt</span><span class="kbd">Shift</span><span class="kbd">P</span>pick</span><span><span class="kbd">Esc</span>close</span><span><span class="kbd">↑</span><span class="kbd">↓</span>widen a pick</span></div>
       </div>
       <div class="grantbar"><span class="grant-text"></span><button class="btn grant-btn" type="button">Allow</button></div>
-      <div class="chip"><span class="chip-kind"></span><span class="chip-name"></span><span class="chip-eye" hidden>Nano will look at it</span><button class="chip-x" type="button" aria-label="Clear the picked element" title="Clear">×</button></div>
+      <div class="tray" aria-label="Picked on the page"></div>
       <div class="field"><textarea class="q" rows="3" spellcheck="false" aria-label="What do you need?"></textarea></div>
       <div class="tools">
         <button class="tool pick-btn" type="button" aria-pressed="false" title="Pick something on the page to ask about (Alt+Shift+P)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="7"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/></svg><span>Pick</span></button>
@@ -707,7 +734,7 @@
     } catch {}
   }
   const anyVisible = () =>
-    ring.style.display === "block" || pillEl.style.display === "flex" || shadow.querySelector(".pick").style.display === "block";
+    ring.style.display === "block" || pillEl.style.display === "flex" || shadow.querySelector(".pick").style.display === "block" || !!shadow.querySelector(".pin") || shadow.querySelector(".pickbar").classList.contains("open");
   function lower() {
     if (anyVisible()) return;
     try { host.hidePopover(); } catch {}
@@ -843,6 +870,8 @@
   }
   function addOwnObstacles() {
     for (const el of [barEl, miniEl]) if (el.classList.contains("open")) obstacles.push(el.getBoundingClientRect());
+    // An answer about several picks shouldn't cover the other picks it's talking about.
+    if (bubbleMode === "pick") for (const p of pins) if (p.el !== target) obstacles.push(p.el.getBoundingClientRect(), p.tag.getBoundingClientRect());
   }
   const overlaps = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
 
@@ -951,6 +980,7 @@
     lostSince = 0;
     covered = false;
     bubbleMode = mode === "explain" ? "explain" : mode === "pick" ? "pick" : "guide";
+    ring.classList.remove("multi");
     pill(null);
     // The mini status follows along: what to do now, with Pause / End / Open next to it.
     if (barUsed && bubbleMode !== "pick" && !loading && !streaming) miniState("guide", title || text);
@@ -1001,7 +1031,7 @@
     cancelAnimationFrame(raf);
     ring.style.display = "none";
     bubble.style.display = "none";
-    if (wasPick && pinned) drawPin(); // back to the pinned outline
+    if (wasPick && pins.length) runLoop(); // back to the pinned outlines
     lower();
   }
 
@@ -1040,15 +1070,15 @@
 
   // ---------- Element picker ----------
   // Like devtools' inspector, but it snaps to what a person means (a control, a field with its label, a
-  // row, a card, a chart) and names it in plain words. Clicking pins it as context for questions.
+  // row, a card, a chart, a column) and names it in plain words. Each click adds a numbered pin (click a
+  // pin again to remove it); everything pinned is asked about together.
   const PICK_BLOCKS =
-    "label,fieldset,[role=group],[role=region],[role=img],[role=figure],figure,img,svg,canvas,table,section,article,mat-card,.mat-mdc-card,li,dl,h1,h2,h3,h4,p,mat-form-field,.mat-mdc-form-field,[class*=chart],[class*=Chart]";
+    "label,fieldset,[role=group],[role=region],[role=img],[role=figure],figure,img,svg,canvas,table,section,article,mat-card,.mat-mdc-card,li,dl,h1,h2,h3,h4,p,mat-form-field,.mat-mdc-form-field,[class*=chart],[class*=Chart],th,[role=columnheader],mat-header-cell,.mat-mdc-header-cell";
   const pickBox = shadow.querySelector(".pick");
   const pickTag = shadow.querySelector(".pick-tag");
   let picking = false;
   let hoverChain = [];
   let hoverLevel = 0;
-  let pinned = null;
   let lastContextTarget = null;
   let cursorStyle = null;
   let pickLoop = 0;
@@ -1108,6 +1138,7 @@
     if (vision === "chart") return "Chart";
     if (vision === "image") return "Image";
     if (vision === "icon") return el.matches(INTERACTIVE) ? "Icon button" : "Icon";
+    if (el.matches(COLHEAD) && !el.matches(ROW) && !el.closest("tbody")) return "Column";
     if (el.matches(ROW)) return "Row";
     if (tag === "table") return "Table";
     if (/^h[1-6]$/.test(tag) || role === "heading") return "Heading";
@@ -1119,7 +1150,31 @@
     if (tag === "li" || tag === "dl") return "Item";
     return "Element";
   }
+  /** A column header's own words, without its sort arrow or help icon ("Verified requests", not "… help"). */
+  function colName(th) {
+    const c = th.cloneNode(true);
+    c.querySelectorAll("mat-icon,.material-icons,.material-symbols-outlined,[aria-hidden=true],button,svg").forEach((n) => n.remove());
+    return clean(c.textContent || "") || textOf(th);
+  }
+  /** A column's values, row by row ("Firebase AI Logic: 100%"), so a picked column carries its data. */
+  function colFields(th) {
+    const table = th.closest("table,[role=table],[role=grid],[role=treegrid],mat-table,.mat-mdc-table");
+    if (!table) return "";
+    const heads = [...table.querySelectorAll(COLHEAD)].filter((h) => !h.closest("tbody"));
+    const idx = heads.indexOf(th);
+    if (idx < 0) return "";
+    const out = [];
+    for (const row of [...table.querySelectorAll(ROW)].slice(0, 40)) {
+      const cells = [...row.querySelectorAll(CELL)];
+      const cell = cells[idx - (heads.length - cells.length)];
+      const v = cell && textOf(cell);
+      if (v && cells.length > 1) out.push(`${textOf(cells[0]).slice(0, 40)}: ${v.slice(0, 60)}`);
+      if (out.length >= 12) break;
+    }
+    return out.join(" · ");
+  }
   function pickName(el, kind) {
+    if (kind === "Column") return colName(el).slice(0, 80);
     if (kind === "Chart" || kind === "Image") {
       // A chart's own label usually starts with its name ("Traffic This chart is described by…").
       const own = (el.getAttribute("aria-label") || el.querySelector?.("[aria-label]")?.getAttribute("aria-label") || "").split(/\s+(?:This|The)\s+(?:chart|graph|image)\b|[.:\n]/i)[0].trim();
@@ -1155,7 +1210,7 @@
   function rowFields(row) {
     const table = row.closest("table,[role=table],[role=grid],[role=treegrid],mat-table,.mat-mdc-table");
     if (!table) return "";
-    const heads = [...table.querySelectorAll("thead th, [role=columnheader], mat-header-cell, .mat-mdc-header-cell")].map((h) => textOf(h));
+    const heads = [...table.querySelectorAll("thead th, [role=columnheader], mat-header-cell, .mat-mdc-header-cell")].map((h) => colName(h));
     const cells = [...row.querySelectorAll(CELL)].map((c) => textOf(c));
     if (!heads.length || !cells.length) return "";
     // Checkbox/select columns can make the counts differ: line them up from the right.
@@ -1182,7 +1237,7 @@
       state: stateOf(el),
       context: redact(contextOf(el)),
       text: redact(text).slice(0, 1400),
-      fields: el.matches(ROW) ? redact(rowFields(el)).slice(0, 600) : "",
+      fields: el.matches(ROW) ? redact(rowFields(el)).slice(0, 600) : kind === "Column" ? redact(colFields(el)).slice(0, 600) : "",
       hint: d.hint,
       nearby: text.length > 60 ? "" : d.nearby,
       docHref: d.docHref,
@@ -1192,20 +1247,26 @@
     };
   }
 
-  function placeTag(r, pinnedMode) {
+  // ---- Pins: everything picked so far, numbered in the order it was picked ----
+  const MAX_PINS = 8;
+  const pinsLayer = shadow.querySelector(".pins");
+  const pickbar = shadow.querySelector(".pickbar");
+  let pins = []; // { el, key, box, tag }
+  let pinSeq = 0;
+  const pinOf = (el) => pins.find((p) => p.el === el);
+
+  function tagSpot(r, w) {
     const th = 22, m = 6;
     let top = r.top - th - 6;
     if (top < m) top = Math.min(r.bottom + 6, innerHeight - th - m);
-    pickTag.style.left = `${Math.min(Math.max(m, r.left), innerWidth - Math.min(360, pickTag.offsetWidth || 200) - m)}px`;
-    pickTag.style.top = `${top}px`;
-    pickTag.classList.toggle("pinned", pinnedMode);
+    return { left: Math.min(Math.max(m, r.left), innerWidth - Math.min(360, w || 200) - m), top };
   }
-  function drawBox(el, pinnedMode) {
+  function drawBox(el) {
     const r = el.getBoundingClientRect();
     Object.assign(pickBox.style, { display: "block", left: `${r.left - 2}px`, top: `${r.top - 2}px`, width: `${r.width + 4}px`, height: `${r.height + 4}px` });
-    pickBox.classList.toggle("pinned", pinnedMode);
     pickTag.style.display = "flex";
-    placeTag(r, pinnedMode);
+    const t = tagSpot(r, pickTag.offsetWidth);
+    Object.assign(pickTag.style, { left: `${t.left}px`, top: `${t.top}px` });
   }
   function labelTag(el) {
     const vision = visionNeed(el);
@@ -1213,29 +1274,99 @@
     pickTag.querySelector(".kind").textContent = kind;
     pickTag.querySelector(".name").textContent = kind === pickName(el, kind) ? "" : pickName(el, kind);
     pickTag.querySelector(".eye").hidden = !vision;
+    const pinned = pinOf(el);
+    pickTag.classList.toggle("is-pinned", !!pinned);
+    pickTag.querySelector(".pstate").textContent = pinned ? `#${pins.indexOf(pinned) + 1} · click to remove` : pins.length >= MAX_PINS ? `max ${MAX_PINS}` : `+ #${pins.length + 1}`;
   }
   function hidePickBox() {
     pickBox.style.display = "none";
     pickTag.style.display = "none";
   }
-  function drawPin() {
-    if (!pinned || !pinned.isConnected) return;
-    raise();
-    labelTag(pinned);
-    drawBox(pinned, true);
+  function renumber() {
+    pins.forEach((p, i) => (p.tag.querySelector(".pin-n").textContent = String(i + 1)));
+    updatePickbar();
   }
-  // Follow scrolling / layout while hovering or pinned (cheap: one rect per frame).
+  function addPin(el) {
+    const key = `p${++pinSeq}`;
+    const vision = visionNeed(el);
+    const kind = pickKind(el, vision);
+    const name = pickName(el, kind);
+    const box = document.createElement("div");
+    box.className = "pin";
+    const tag = document.createElement("div");
+    tag.className = "pin-tag";
+    tag.innerHTML = `<span class="pin-n"></span><span class="kind"></span><span class="name"></span><button class="unpin" type="button">×</button>`;
+    tag.querySelector(".kind").textContent = kind;
+    tag.querySelector(".name").textContent = kind === name ? "" : name;
+    tag.querySelector(".unpin").setAttribute("aria-label", `Remove ${name}`);
+    tag.querySelector(".unpin").title = "Remove";
+    tag.querySelector(".unpin").addEventListener("click", () => removePin(key, true));
+    pinsLayer.append(box, tag);
+    pins.push({ el, key, box, tag });
+    raise();
+    renumber();
+    runLoop();
+    const desc = describePick(el);
+    safeSend({ type: "picked", desc, key });
+    return desc;
+  }
+  function removePin(key, notify) {
+    const p = pins.find((x) => x.key === key);
+    if (!p) return;
+    p.box.remove();
+    p.tag.remove();
+    pins = pins.filter((x) => x !== p);
+    renumber();
+    if (!pins.length && bubbleMode === "pick") hide();
+    if (notify) safeSend({ type: "pick-removed", key });
+    if (!pins.length) lower();
+  }
+  function clearPins(notify) {
+    for (const p of pins) p.box.remove(), p.tag.remove();
+    pins = [];
+    updatePickbar();
+    if (bubbleMode === "pick") hide();
+    if (notify) safeSend({ type: "pick-cleared" });
+    lower();
+  }
+  function drawPins() {
+    for (const p of [...pins]) {
+      if (!p.el.isConnected) {
+        removePin(p.key, true);
+        continue;
+      }
+      const r = p.el.getBoundingClientRect();
+      const off = r.bottom < 0 || r.top > innerHeight || r.width === 0;
+      p.box.style.display = off ? "none" : "";
+      p.tag.style.display = off || (picking && hoverChain[hoverLevel] === p.el) ? "none" : "";
+      if (off) continue;
+      Object.assign(p.box.style, { left: `${r.left - 2}px`, top: `${r.top - 2}px`, width: `${r.width + 4}px`, height: `${r.height + 4}px` });
+      const t = tagSpot(r, p.tag.offsetWidth);
+      Object.assign(p.tag.style, { left: `${t.left}px`, top: `${t.top}px` });
+    }
+  }
+  // Follow scrolling / layout while picking or while anything is pinned (cheap: a few rects per frame).
   function loop() {
     pickLoop = requestAnimationFrame(loop);
-    if (picking && hoverChain.length) drawBox(hoverChain[hoverLevel], false);
-    else if (pinned && !(bubbleMode === "pick" && ring.style.display === "block")) {
-      if (!pinned.isConnected) return clearPin(true);
-      drawBox(pinned, true);
-    }
+    if (picking && hoverChain.length) drawBox(hoverChain[hoverLevel]);
+    if (pins.length) drawPins();
+    if (!picking && !pins.length) cancelAnimationFrame(pickLoop);
+  }
+  function runLoop() {
+    cancelAnimationFrame(pickLoop);
+    loop();
+  }
+  function updatePickbar() {
+    const n = pins.length;
+    pickbar.querySelector(".pb-count").textContent = n ? `${n} picked` : "Picking";
+    pickbar.querySelector(".pb-hint").textContent =
+      n >= MAX_PINS ? `That's the most Nano can weigh at once. Click one to swap it out.` : n ? "Click more to add, click a pick to remove · ↑ ↓ widen" : "Click anything to ask about it · ↑ ↓ widen";
+    pickbar.querySelector(".pb-clear").hidden = !n;
+    pickbar.querySelector(".pb-done").textContent = n ? "Done" : "Cancel";
+    pickbar.classList.toggle("full", n >= MAX_PINS);
   }
 
   function startPicking() {
-    clearPin(false);
     hide();
     picking = true;
     hoverChain = [];
@@ -1243,37 +1374,36 @@
     cursorStyle = document.createElement("style");
     cursorStyle.textContent = "*{cursor:crosshair !important}";
     (document.head || document.documentElement).appendChild(cursorStyle);
-    pill("pick", "Click anything to ask about it · ↑ ↓ to widen · Esc to cancel");
-    cancelAnimationFrame(pickLoop);
-    loop();
+    pill(null);
+    miniEl.classList.remove("open");
+    updatePickbar();
+    pickbar.classList.add("open");
+    raise();
+    runLoop();
   }
-  function stopPicking() {
+  /** Leave picking mode. With picks, Waypoint asks what you want to know; with none, it's a cancel. */
+  function stopPicking(report = true) {
+    if (!picking) return;
     picking = false;
     cursorStyle?.remove();
     cursorStyle = null;
-    pill(null);
-    if (!pinned) hidePickBox();
-  }
-  function select(el) {
-    stopPicking();
-    pinned = el;
-    labelTag(el);
-    drawPin();
-    cancelAnimationFrame(pickLoop);
-    loop();
-    const desc = describePick(el);
-    safeSend({ type: "picked", desc });
-    return desc;
-  }
-  function clearPin(notify) {
-    pinned = null;
+    pickbar.classList.remove("open");
     hidePickBox();
-    if (bubbleMode === "pick") hide();
-    cancelAnimationFrame(pickLoop);
     lower();
-    if (notify) safeSend({ type: "pick-cleared" });
+    if (report) safeSend(pins.length ? { type: "pick-finished", count: pins.length } : { type: "pick-cancelled" });
   }
-  pickTag.querySelector(".unpin").addEventListener("click", () => clearPin(true));
+  function togglePick(el) {
+    const p = pinOf(el);
+    if (p) removePin(p.key, true);
+    else if (pins.length < MAX_PINS) addPin(el);
+    else {
+      pickbar.animate?.([{ transform: "translateX(-50%)" }, { transform: "translateX(calc(-50% - 6px))" }, { transform: "translateX(calc(-50% + 6px))" }, { transform: "translateX(-50%)" }], { duration: 260 });
+      return;
+    }
+    labelTag(el);
+  }
+  pickbar.querySelector(".pb-done").addEventListener("click", () => stopPicking());
+  pickbar.querySelector(".pb-clear").addEventListener("click", () => clearPins(true));
 
   function hoverAt(node) {
     const chain = meaningfulChain(node);
@@ -1302,7 +1432,7 @@
         e.stopImmediatePropagation();
         if (type === "click") {
           hoverAt(e.composedPath()[0]);
-          if (hoverChain.length) select(hoverChain[hoverLevel]);
+          if (hoverChain.length) togglePick(hoverChain[hoverLevel]);
         }
       },
       true
@@ -1312,10 +1442,9 @@
     "keydown",
     (e) => {
       if (!picking) return;
-      if (e.key === "Escape") stopPicking(), safeSend({ type: "pick-cancelled" });
+      if (e.key === "Escape" || e.key === "Enter") stopPicking(); // finish: with picks it's "Done", without it's a cancel
       else if (e.key === "ArrowUp" && hoverChain.length) hoverLevel = Math.min(hoverLevel + 1, hoverChain.length - 1), labelTag(hoverChain[hoverLevel]);
       else if (e.key === "ArrowDown" && hoverChain.length) hoverLevel = Math.max(hoverLevel - 1, 0), labelTag(hoverChain[hoverLevel]);
-      else if (e.key === "Enter" && hoverChain.length) select(hoverChain[hoverLevel]);
       else return;
       e.preventDefault();
       e.stopImmediatePropagation();
@@ -1390,15 +1519,46 @@
     el.title = site.all ? "On for every site (Settings to change)" : on ? `On for ${site.host}. Click to turn off.` : `Off for ${site.host}: click to keep Waypoint on here`;
     b$(".m-all").setAttribute("aria-checked", String(!!site.all));
   }
+  /** The picks, as numbered chips matching the outlines on the page; × removes one, + adds more. */
   function renderChip() {
-    const p = snap?.pick;
-    const chip = b$(".chip");
-    chip.classList.toggle("open", !!p);
-    if (!p) return;
-    qEl.placeholder = `Ask about “${p.desc.name}”…`;
-    b$(".chip-kind").textContent = p.desc.kind;
-    b$(".chip-name").textContent = p.desc.name;
-    b$(".chip-eye").hidden = !p.desc.vision;
+    const items = snap?.pick?.items || [];
+    const tray = b$(".tray");
+    tray.classList.toggle("open", items.length > 0);
+    tray.classList.toggle("one", items.length === 1);
+    tray.replaceChildren();
+    if (!items.length) return;
+    qEl.placeholder = items.length === 1 ? `Ask about “${items[0].desc.name}”…` : `Ask about these ${items.length}: compare them, how they relate…`;
+    items.forEach(({ key, desc }, i) => {
+      const c = document.createElement("span");
+      c.className = "tchip";
+      c.title = `${desc.kind}: ${desc.name}`;
+      c.innerHTML = `<span class="pin-n"></span><span class="kind"></span><span class="name"></span><span class="eye" hidden>👁</span><button class="tx" type="button">×</button>`;
+      c.querySelector(".pin-n").textContent = String(i + 1);
+      c.querySelector(".kind").textContent = desc.kind;
+      c.querySelector(".name").textContent = desc.name;
+      c.querySelector(".eye").hidden = !desc.vision;
+      if (desc.vision) c.querySelector(".eye").title = "Gemini Nano will look at a screenshot of it, on this device";
+      const x = c.querySelector(".tx");
+      x.setAttribute("aria-label", `Remove ${desc.name}`);
+      x.title = "Remove";
+      x.addEventListener("click", () => toBrain({ type: "bar:pick-remove", key }));
+      tray.appendChild(c);
+    });
+    const add = document.createElement("button");
+    add.type = "button";
+    add.className = "tact";
+    add.textContent = "+ Pick more";
+    add.title = "Add more to ask about together (Alt+Shift+P)";
+    add.addEventListener("click", startPickFromBar);
+    tray.appendChild(add);
+    if (items.length > 1) {
+      const clr = document.createElement("button");
+      clr.type = "button";
+      clr.className = "tact";
+      clr.textContent = "Clear all";
+      clr.addEventListener("click", () => toBrain({ type: "bar:pick-clear" }));
+      tray.appendChild(clr);
+    }
   }
   function renderGrant() {
     const g = snap?.grant;
@@ -1467,7 +1627,8 @@
     // Fold up so the page (and the guide) is visible; progress shows in the mini status.
     barEl.classList.remove("open");
     closeMenu();
-    b$(".mini-text").textContent = snap?.pick ? `Asking about “${snap.pick.desc.name}”…` : "Thinking…";
+    const picked = snap?.pick?.items || [];
+    b$(".mini-text").textContent = picked.length === 1 ? `Asking about “${picked[0].desc.name}”…` : picked.length ? `Asking about ${picked.length} picks…` : "Thinking…";
     miniState("busy");
   }
   function startPickFromBar() {
@@ -1539,7 +1700,6 @@
     } else if (!site.allowed) toSW({ type: "grant", origins: [site.pattern], text: `Keep Waypoint on for ${site.host}, so it can guide you here any time.` });
   });
   b$(".grant-btn").addEventListener("click", () => snap?.grant && toSW({ type: "grant", origins: snap.grant.origins, text: snap.grant.text }));
-  b$(".chip-x").addEventListener("click", () => toBrain({ type: "bar:pick-clear" }));
   b$(".mini .open").addEventListener("click", () => openBar());
   b$(".mini .end").addEventListener("click", () => {
     toBrain({ type: "bar:end" });
@@ -1585,7 +1745,8 @@
         break;
       case "pick":
         snap.pick = msg.pick;
-        if (msg.pick) openBar();
+        // While still picking, the pick bar shows the count; the command bar opens once they're done.
+        if (msg.pick && !picking) openBar();
         else if (barOpen()) renderBar();
         break;
       case "grant":
@@ -1671,22 +1832,36 @@
         reply({ ok: true });
         break;
       case "pick-clear":
-        clearPin(false);
+        clearPins(false);
+        reply({ ok: true });
+        break;
+      case "pick-remove":
+        removePin(msg.key, false);
         reply({ ok: true });
         break;
       case "pick-from-context": {
         const chain = lastContextTarget ? meaningfulChain(lastContextTarget) : [];
-        reply(chain.length ? select(chain[baseLevel(chain)]) : null);
+        if (!chain.length) reply(null);
+        else {
+          const el = chain[baseLevel(chain)];
+          // Right-click adds to what's already picked (or re-reports it if it's picked already).
+          const had = pinOf(el);
+          if (had) safeSend({ type: "picked", desc: describePick(el), key: had.key, again: true });
+          reply(had ? describePick(el) : pins.length < MAX_PINS ? addPin(el) : null);
+        }
         break;
       }
       case "pick-show":
-        if (pinned && pinned.isConnected) {
-          show(pinned, { ...msg, mode: "pick" });
+        if (pins[0]?.el.isConnected) {
+          // The answer anchors on the first pick; every pick stays outlined and numbered around it.
+          show(pins[0].el, { ...msg, mode: "pick" });
+          ring.classList.toggle("multi", pins.length > 1);
           reply({ ok: true });
         } else reply({ ok: false });
         break;
       case "pick-rect": {
         // For the screenshot: bring it into view, hide Waypoint's own overlay, then report where it is.
+        const pinned = (msg.key && pins.find((p) => p.key === msg.key)?.el) || pins[0]?.el;
         if (!pinned || !pinned.isConnected) {
           reply(null);
           break;

@@ -42,7 +42,7 @@ function snapshot() {
   return {
     ...view,
     settings,
-    pick: pick.desc ? { desc: pick.desc, suggestions: suggestionsFor(pick.desc) } : null,
+    pick: pickView(),
     mode: state.mode,
     logs: logs.slice(0, 120),
   };
@@ -799,7 +799,9 @@ function finishTour() {
 // the cursor → click pins it → the card here shows it with suggested questions → answers stream onto it.
 // Charts, images and icon-only controls also get a screenshot of just that element, read by Nano on-device.
 
-const pick = { desc: null, tabId: null, thread: [] };
+// Everything picked, in the order it was picked (the page numbers them the same way).
+const pick = { items: [], tabId: null, thread: [] };
+const MAX_IMAGES = 3; // screenshots per question: each one costs Nano context
 
 const SUGGEST = {
   Chart: ["What does this chart show?", "Anything unusual here?", "How do I read this?"],
@@ -812,6 +814,7 @@ const SUGGEST = {
   Field: ["What goes in here?", "What's a good value?"],
   Dropdown: ["What do these options mean?", "Which should I pick?"],
   Row: ["What do these values mean?", "Is anything wrong here?", "How do I change this?"],
+  Column: ["What does this column mean?", "Are these values OK?"],
   Table: ["Summarize this table", "Anything I should look at?"],
   Button: ["What does this do?", "Is it reversible?"],
   Link: ["Where does this go?", "What's it for?"],
@@ -821,10 +824,20 @@ const SUGGEST = {
   Card: ["Summarize this", "What should I do here?"],
   Heading: ["What is this section about?"],
 };
-function suggestionsFor(d) {
-  const base = SUGGEST[d.kind] || ["What is this?", "What does it do?"];
-  return /disabled/.test(d.state) ? ["Why is this disabled?", ...base].slice(0, 3) : base;
+function suggestionsFor(items) {
+  if (items.length === 1) {
+    const d = items[0].desc;
+    const base = SUGGEST[d.kind] || ["What is this?", "What does it do?"];
+    return /disabled/.test(d.state) ? ["Why is this disabled?", ...base].slice(0, 3) : base;
+  }
+  const kinds = new Set(items.map((x) => x.desc.kind));
+  const k = kinds.size === 1 ? [...kinds][0] : "";
+  if (/Switch|Checkbox|Setting/.test(k)) return ["What's the difference between these?", "Which should be on?", "Is it safe to change them?"];
+  if (k === "Chart") return ["What do these charts show together?", "Anything unusual?", "Compare them"];
+  if (k === "Row") return ["Compare these", "Is anything wrong here?", "What do these values mean?"];
+  return ["How do these relate?", "Compare them", "Anything I should change?"];
 }
+const pickView = () => (pick.items.length ? { items: pick.items, suggestions: suggestionsFor(pick.items) } : null);
 
 // Screenshots need the "all URLs" grant (or activeTab, which only right-click / the shortcut give).
 const SCREENSHOT_ORIGINS = ["<all_urls>"];
@@ -832,10 +845,9 @@ const canScreenshot = () => C.permissions.contains({ origins: SCREENSHOT_ORIGINS
 let pendingRetry = null;
 
 async function renderPickCard() {
-  const d = pick.desc;
-  ui("pick", { pick: d ? { desc: d, suggestions: suggestionsFor(d) } : null });
-  if (d?.vision && !pick.activeTab && !(await canScreenshot()) && pick.desc === d) {
-    view.grant = { kind: "screenshot", origins: SCREENSHOT_ORIGINS, text: "To read it, Nano needs a screenshot of just this element. It stays on your device." };
+  ui("pick", { pick: pickView() });
+  if (pick.items.some((x) => x.desc.vision) && !(await canScreenshot()) && !view.picking) {
+    view.grant = { kind: "screenshot", origins: SCREENSHOT_ORIGINS, text: "To read charts and icons, Nano needs a screenshot of just those elements. It stays on your device." };
     ui("grant", { grant: view.grant });
   }
 }
@@ -843,19 +855,29 @@ function setPicking(on) {
   view.picking = on;
   ui("picking", { on });
 }
-function setPicked(desc, tabId) {
-  Object.assign(pick, { desc, tabId, thread: [] });
+const pickStatus = () =>
+  status(pick.items.length > 1 ? `${pick.items.length} picked. Ask about them together.` : pick.items.length ? "Ask anything about it." : "Nothing picked.");
+/** The page added a pick (a click while picking, or right-click "Ask Waypoint about this"). */
+function addPicked(desc, key, tabId, again = false) {
+  if (pick.tabId !== tabId) Object.assign(pick, { items: [], thread: [] });
+  pick.tabId = tabId;
   state.tabId = tabId;
-  setPicking(false);
+  if (!pick.items.some((x) => x.key === key)) pick.items.push({ key, desc });
+  pick.thread = []; // a different selection is a new conversation
+  if (!again) log({ kind: "info", title: `Picked #${pick.items.length}: ${desc.kind} "${desc.name}"`, detail: desc.vision ? `Looks like ${desc.vision === "icon" ? "an icon" : `a ${desc.vision}`}: Nano will also look at a screenshot of it.` : "Its text, state and surroundings are the context." });
   renderPickCard();
-  if (desc) {
-    log({ kind: "info", title: `Picked: ${desc.kind} "${desc.name}"`, detail: desc.vision ? `Looks like ${desc.vision === "icon" ? "an icon" : `a ${desc.vision}`}: Nano will also look at a screenshot of it.` : "Its text, state and surroundings are the context." });
-    status("Ask anything about it.");
-  }
+  if (!view.picking) pickStatus();
+}
+function removePicked(key, tellPage) {
+  if (tellPage && pick.tabId != null) send(pick.tabId, { type: "pick-remove", key }).catch(() => {});
+  pick.items = pick.items.filter((x) => x.key !== key);
+  pick.thread = [];
+  renderPickCard();
+  pickStatus();
 }
 function clearPicked(tellPage = true) {
   if (tellPage && pick.tabId != null) send(pick.tabId, { type: "pick-clear" }).catch(() => {});
-  Object.assign(pick, { desc: null, tabId: null, thread: [] });
+  Object.assign(pick, { items: [], tabId: null, thread: [] });
   renderPickCard();
 }
 
@@ -868,23 +890,24 @@ async function startPick(tabId) {
   setPaused(false);
   renderSteps();
   await ensureFresh(tabId);
+  if (pick.tabId !== tabId) Object.assign(pick, { items: [], thread: [] });
   await send(tabId, { type: "pick-start" });
   pick.tabId = tabId;
   setPicking(true);
-  status("Hover over the page and click what you want to ask about. ↑ ↓ widen or narrow, Esc cancels.");
+  status("Click everything you want to ask about, then Done. ↑ ↓ widen or narrow.");
 }
 /** The user allowed screenshots (grant window): re-ask what was asked without one. */
 function screenshotsAllowed() {
-  if (pendingRetry && pick.desc) {
+  if (pendingRetry && pick.items.length) {
     const q = pendingRetry;
     pendingRetry = null;
     answerPick(q);
   }
 }
 
-/** Screenshot of just the picked element (Waypoint's overlay hidden), downscaled; stays on this device. */
-async function captureCrop(tabId) {
-  const r = await send(tabId, { type: "pick-rect" });
+/** Screenshot of just one picked element (Waypoint's overlay hidden), downscaled; stays on this device. */
+async function captureCrop(tabId, key) {
+  const r = await send(tabId, { type: "pick-rect", key });
   if (!r) throw new Error("The element is gone");
   try {
     const tab = await C.tabs.get(tabId);
@@ -909,64 +932,94 @@ async function captureCrop(tabId) {
 }
 
 /** A question about the picked element: route it (explain here, or guide from it), then answer. */
+const pickNames = (items) => items.map((x) => `the ${x.desc.kind.toLowerCase()} "${x.desc.name}"`).join(", ");
 async function handlePick(question) {
-  const d = pick.desc;
+  const items = pick.items;
   const tabId = pick.tabId;
   let mode = "explain";
   try {
-    mode = (await chooseMode({ question, title: d.pageTitle })).mode;
+    mode = (await chooseMode({ question, title: items[0].desc.pageTitle })).mode;
   } catch {}
   if (mode === "guide") {
-    // "Turn this on", "where else is this set": a guide that starts from the picked element.
-    return ask(`${question} (they mean the ${d.kind.toLowerCase()} "${d.name}" on this page)`, tabId);
+    // "Turn this on", "where else is this set": a guide that starts from the picked element(s).
+    return ask(`${question} (they mean ${pickNames(items)} on this page)`, tabId);
   }
   return answerPick(question);
 }
 
+/** "Firebase AI Logic", or "Firebase AI Logic · Verified requests · +1 more" for several picks. */
+function pickTitle(names) {
+  if (names.length === 1) return names[0];
+  let out = names[0];
+  let k = 1;
+  while (k < names.length && (out + " · " + names[k]).length <= 56) out += " · " + names[k++];
+  return k < names.length ? `${out} · +${names.length - k} more` : out;
+}
 async function answerPick(question) {
   const gen = ++state.gen;
   clearTimeout(stepTimer);
   Object.assign(state, { mode: "pick", tour: null, single: null });
   setPaused(false);
   renderSteps();
-  const d = pick.desc;
+  const items = pick.items.slice();
+  const els = items.map((x) => x.desc);
+  const one = els.length === 1;
   const tabId = pick.tabId;
   state.tabId = tabId;
-  const loadingText = d.vision ? "Gemini Nano is looking at it, on your device…" : nanoReady ? "Gemini Nano is thinking, on your device…" : "Thinking…";
-  const shown = await send(tabId, { type: "pick-show", step: d.kind, title: d.name, text: "", loading: true, loadingText });
+  const names = els.map((d) => d.name);
+  const looks = els.some((d) => d.vision);
+  const loadingText = looks ? `Gemini Nano is looking at ${one ? "it" : "them"}, on your device…` : nanoReady ? "Gemini Nano is thinking, on your device…" : "Thinking…";
+  const shown = await send(tabId, {
+    type: "pick-show",
+    step: one ? els[0].kind : `${els.length} picks`,
+    title: pickTitle(names),
+    text: "",
+    loading: true,
+    loadingText,
+  });
   if (!shown?.ok) {
     clearPicked(false);
-    status("That element isn't on the page any more. Pick it again.");
+    status("What you picked isn't on the page any more. Pick again.");
     return;
   }
-  status(`Answering about "${d.name}"…`);
+  status(one ? `Answering about "${names[0]}"…` : `Answering about ${els.length} picks…`);
   try {
-    const docsP = lookupDocs({ question: `${question} ${d.name}`, tabId, outline: { title: d.pageTitle }, labels: [d.name], nearLinks: d.docHref ? [d.docHref] : [] });
-    let image = null;
-    if (d.vision) {
+    const docsP = lookupDocs({
+      question: `${question} ${names.join(" ")}`,
+      tabId,
+      outline: { title: els[0].pageTitle },
+      labels: names,
+      nearLinks: [...new Set(els.map((d) => d.docHref).filter(Boolean))],
+    });
+    // Screenshots of the charts and icons among the picks (a few at most), each cropped to just that element.
+    const images = [];
+    for (const [i, x] of items.entries()) {
+      if (!x.desc.vision || images.length >= MAX_IMAGES) continue;
       try {
-        image = await captureCrop(tabId);
+        images.push({ n: i + 1, ...(await captureCrop(tabId, x.key)) });
       } catch (e) {
         const perm = /permission/i.test(String(e?.message));
-        log({ kind: "info", title: "Couldn't take a screenshot of it", detail: perm ? "Screenshots aren't allowed yet; answering from its text. Allow them in the card to let Nano look." : `${e?.message || e}. Answering from its text instead.` });
+        log({ kind: "info", title: `Couldn't take a screenshot of #${i + 1}`, detail: perm ? "Screenshots aren't allowed yet; answering from its text. Allow them in the bar to let Nano look." : `${e?.message || e}. Answering from its text instead.` });
         if (perm) {
-          view.grant = { kind: "screenshot", origins: SCREENSHOT_ORIGINS, text: "To read it, Nano needs a screenshot of just this element. It stays on your device." };
+          view.grant = { kind: "screenshot", origins: SCREENSHOT_ORIGINS, text: "To read charts and icons, Nano needs a screenshot of just those elements. It stays on your device." };
           ui("grant", { grant: view.grant });
           pendingRetry = question;
+          break;
         }
       }
     }
+    if (images.length) await send(tabId, { type: "pick-show", step: one ? els[0].kind : `${els.length} picks`, title: pickTitle(names), text: "", loading: true, loadingText }).catch(() => {});
     const docs = await withTimeout(docsP, 4000);
     if (gen !== state.gen) return;
-    const docsText = docsTextFor(docs, `${d.name} ${question}`, 1000, d.name);
-    const docUrl = docsText ? docs.urlFor(d.name) : null;
+    const docsText = docsTextFor(docs, `${names.join(" ")} ${question}`, one ? 1000 : 1400, one ? names[0] : "");
+    const docUrl = docsText ? docs.urlFor(names.join(" ")) : null;
     let last = 0;
     const r = await answerAboutElement({
       question,
-      el: d,
+      els,
       history: pick.thread,
       docs: docsText,
-      image,
+      images,
       onText: (t) => {
         if (gen !== state.gen || performance.now() - last < 60) return;
         last = performance.now();
@@ -978,12 +1031,12 @@ async function answerPick(question) {
     pick.thread = [...pick.thread, { q: question, a: r.text }].slice(-3);
     log({
       kind: r.source === "in_cloud" ? "in_cloud" : "on_device",
-      title: `About "${d.name}"${r.usedImage ? " (looked at it)" : ""}`,
-      detail: `${SOURCE_LABEL[r.source] || r.source}${docsText ? " · grounded in the docs" : ""}${r.usedImage ? " · screenshot stayed on this device" : ""}`,
+      title: `${one ? `About "${names[0]}"` : `About ${els.length} picks`}${r.imagesUsed ? ` (looked at ${r.imagesUsed === 1 && one ? "it" : `${r.imagesUsed} screenshot${r.imagesUsed === 1 ? "" : "s"}`})` : ""}`,
+      detail: `${SOURCE_LABEL[r.source] || r.source}${docsText ? " · grounded in the docs" : ""}${r.imagesUsed ? " · screenshots stayed on this device" : ""}${one ? "" : ` · ${names.join(" · ")}`}`,
       sent: r.sent,
       ms: r.ms,
     });
-    status("Ask a follow-up, or pick something else.");
+    status(one ? "Ask a follow-up, or pick something else." : "Ask a follow-up, or pick more.");
     ui("query", { text: "" });
   } catch (e) {
     console.error(e);
@@ -996,7 +1049,7 @@ async function answerPick(question) {
 (async () => {
   try {
     const { pendingPick } = await C.storage.session.get("pendingPick");
-    if (pendingPick && Date.now() - pendingPick.at < 15000) setPicked(pendingPick.desc, pendingPick.tabId);
+    if (pendingPick && Date.now() - pendingPick.at < 15000) addPicked(pendingPick.desc, pendingPick.key || "ctx", pendingPick.tabId);
     await C.storage.session.remove("pendingPick");
   } catch {}
 })();
@@ -1123,7 +1176,7 @@ async function replanNow() {
 
 /** A question from the command bar: about the picked element, or a new request. */
 function askFromBar(q, tabId) {
-  if (pick.desc && pick.tabId === tabId) handlePick(q);
+  if (pick.items.length && pick.tabId === tabId) handlePick(q);
   else handle(q, tabId);
 }
 
@@ -1152,6 +1205,7 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
   if (msg.type === "bar:pick" && fromTab != null) return void startPick(fromTab);
   if (msg.type === "bar:pick-stop") return void (pick.tabId != null && send(pick.tabId, { type: "pick-stop" }).then(() => setPicking(false)));
   if (msg.type === "bar:pick-clear") return void clearPicked(true);
+  if (msg.type === "bar:pick-remove" && msg.key) return void removePicked(msg.key, true);
   if (msg.type === "bar:resume") return void resume();
   if (msg.type === "bar:end") return void endGuide();
   if (msg.type === "bar:pause") return void (send(state.tabId, { type: "hide" }).catch(() => {}), pause());
@@ -1191,7 +1245,7 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
   }
   // Test hooks for the picker: window.postMessage({ __waypoint: "pick" }) / ({ __waypoint: "pick-ask", q }).
   if (msg.type === "page-command" && msg.command === "pick") return void startPick(fromTab);
-  if (msg.type === "page-command" && msg.command === "pick-ask" && msg.q && pick.desc) {
+  if (msg.type === "page-command" && msg.command === "pick-ask" && msg.q && pick.items.length) {
     ui("query", { text: msg.q });
     return void handlePick(msg.q);
   }
@@ -1211,11 +1265,19 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
     });
     return;
   }
-  if (msg.type === "picked" && fromTab != null) return setPicked(msg.desc, fromTab);
+  if (msg.type === "picked" && fromTab != null) return addPicked(msg.desc, msg.key || `k${Date.now()}`, fromTab, msg.again);
+  if (msg.type === "pick-removed" && fromTab === pick.tabId) return removePicked(msg.key, false);
   if (msg.type === "pick-cleared" && fromTab === pick.tabId) return clearPicked(false);
+  if (msg.type === "pick-finished") {
+    setPicking(false);
+    renderPickCard(); // opens the bar with the picks
+    pickStatus();
+    return;
+  }
   if (msg.type === "pick-cancelled") {
     setPicking(false);
-    status("Picking cancelled.");
+    if (pick.items.length) renderPickCard();
+    status(pick.items.length ? "Ask about what you picked." : "Picking cancelled.");
     return;
   }
   if (fromTab !== state.tabId) return;
