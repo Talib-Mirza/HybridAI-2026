@@ -1333,7 +1333,7 @@
   const qEl = shadow.querySelector(".q");
   const goEl = shadow.querySelector(".go");
   const b$ = (sel) => shadow.querySelector(sel);
-  let barUsed = false;
+  let barUsed = true; // the bar is the only way in now, so progress always shows in the top pill
   let snap = null; // the brain's view of things (status, nano, route, pick, settings…)
   let site = null;
   let miniMode = null;

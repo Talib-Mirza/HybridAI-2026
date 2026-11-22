@@ -252,7 +252,7 @@ function placement(outline, id, opensMenu = false) {
   // Nano sometimes flags an ordinary item as a menu; only a control that is actually collapsed counts.
   if (opensMenu && item?.state.includes("collapsed")) return { showId: id, reveal: true, revealText: `${menuName(item?.label)}: what you need should be inside.` };
   // Row actions that only appear on hover: the ring sits on the row and jumps to the control on hover.
-  const hoverHint = item?.hover ? `Hover over "${item.hover}" to reveal it.` : "";
+  const hoverHint = item?.hover ? (/\[[a-z ]+\]/i.test(item.hover) ? "Hover over its row to reveal it." : `Hover over "${item.hover}" to reveal it.`) : "";
   return { showId: id, reveal: false, revealText: "", hoverHint };
 }
 
