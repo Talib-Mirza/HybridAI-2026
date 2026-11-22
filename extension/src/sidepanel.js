@@ -87,6 +87,17 @@ chrome.runtime.onMessage.addListener((msg) => {
   return false;
 });
 
+// Tell the service worker this window's Trace panel is open, so the bar's Trace button can close it.
+// (The port drops if the worker restarts: reconnect.)
+async function announce() {
+  const { id: windowId } = await chrome.windows.getCurrent();
+  const port = chrome.runtime.connect({ name: "trace" });
+  port.postMessage({ windowId });
+  port.onMessage.addListener((m) => m?.type === "close" && window.close());
+  port.onDisconnect.addListener(() => setTimeout(announce, 200));
+}
+announce();
+
 (async () => {
   await chrome.runtime.sendMessage({ to: "sw", type: "ensure-brain" }).catch(() => {});
   const s = await chrome.runtime.sendMessage({ type: "brain:snapshot" }).catch(() => null);

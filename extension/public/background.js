@@ -112,6 +112,30 @@ chrome.runtime.onStartup.addListener(async () => {
 chrome.permissions.onAdded.addListener(refresh);
 chrome.permissions.onRemoved.addListener(() => syncContentScripts().catch(() => {}));
 
+// ---------- Trace panel: is it open in this window? ----------
+// The panel connects a port while it's open; the bar's Trace button toggles it (closing asks the panel to
+// close itself) and shows it as pressed while it's open.
+const traceOpen = new Map(); // windowId -> port
+async function traceChanged(windowId, open) {
+  const tabs = await chrome.tabs.query({ windowId }).catch(() => []);
+  for (const t of tabs) chrome.tabs.sendMessage(t.id, { type: "w2:trace-state", open }).catch(() => {});
+}
+chrome.runtime.onConnect.addListener((port) => {
+  if (port.name !== "trace") return;
+  let win = null;
+  port.onMessage.addListener((m) => {
+    if (m?.windowId == null) return;
+    win = m.windowId;
+    traceOpen.set(win, port);
+    traceChanged(win, true);
+  });
+  port.onDisconnect.addListener(() => {
+    if (win == null || traceOpen.get(win) !== port) return;
+    traceOpen.delete(win);
+    traceChanged(win, false);
+  });
+});
+
 // ---------- Router ----------
 const RPC = {
   "tabs.sendMessage": (tabId, msg) => chrome.tabs.sendMessage(tabId, msg),
@@ -169,9 +193,20 @@ chrome.runtime.onMessage.addListener((msg, sender, reply) => {
     case "all-sites-off":
       chrome.permissions.remove({ origins: [...ALL_SITES, "https://*/*", "http://*/*"] }).then((ok) => reply({ ok }));
       return true;
-    case "trace": // the Trace side panel (needs the click's user gesture to still count)
-      chrome.sidePanel.open({ tabId: tab?.id }).then(() => reply({ ok: true }), (e) => reply({ ok: false, error: e?.message }));
+    case "trace": {
+      // Toggle. Opening needs the click's user gesture to still count, so it's the first call made.
+      const port = traceOpen.get(tab?.windowId);
+      if (port) {
+        port.postMessage({ type: "close" });
+        reply({ ok: true, open: false });
+        return false;
+      }
+      chrome.sidePanel.open({ tabId: tab?.id }).then(() => reply({ ok: true, open: true }), (e) => reply({ ok: false, error: e?.message }));
       return true;
+    }
+    case "trace-state":
+      reply({ open: traceOpen.has(tab?.windowId) });
+      return false;
     case "onboarding":
       chrome.tabs.create({ url: `onboarding.html${msg.hash ? `#${msg.hash}` : ""}` }).then(() => reply({ ok: true }));
       return true;

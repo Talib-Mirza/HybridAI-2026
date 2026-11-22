@@ -620,6 +620,7 @@
       .tool{display:inline-flex;align-items:center;gap:7px;height:34px;padding:0 12px;border-radius:9px;background:none;border:1px solid var(--line);color:var(--text);cursor:pointer;font:500 12.5px var(--sans)}
       .tool svg{width:16px;height:16px;flex:none}
       .tool:hover{border-color:#47574f;background:var(--ink2)}
+      .tool.trace-btn[aria-pressed="true"]{background:rgba(255,178,36,.12);border-color:var(--signal);color:var(--signal)}
       .tool.pick-btn[aria-pressed="true"]{background:rgba(61,220,151,.16);border-color:var(--device);color:var(--device)}
       .tool.cloud-btn[aria-pressed="true"]{background:rgba(116,183,255,.14);border-color:var(--cloud);color:var(--cloud)}
       .spacer{flex:1}
@@ -1564,6 +1565,7 @@
     if (s1) snap = s1;
     site = s2;
     renderBar();
+    toSW({ type: "trace-state" }).then((r) => renderTrace(r?.open));
   }
   function closeBar() {
     barEl.classList.remove("open");
@@ -1736,9 +1738,15 @@
   b$(".pick-btn").addEventListener("click", startPickFromBar);
   b$(".cloud-btn").addEventListener("click", () => toBrain({ type: "bar:settings", settings: { cloudOnly: !snap?.settings?.cloudOnly } }));
   b$(".m-cloud").addEventListener("click", () => toBrain({ type: "bar:settings", settings: { cloudOnly: !snap?.settings?.cloudOnly } }));
+  const renderTrace = (open) => {
+    b$(".trace-btn").setAttribute("aria-pressed", String(!!open));
+    b$(".trace-btn").title = open ? "Close the Trace panel" : "Open the Trace panel: every AI call, where it ran, what was sent";
+    b$(".m-trace").firstChild.textContent = open ? "Close Trace " : "Open Trace (what ran where) ";
+  };
   const openTrace = async () => {
     const r = await toSW({ type: "trace" });
     if (!r?.ok) setBarStatus("Open Trace from Chrome's side panel menu (the panel icon in the toolbar).", false);
+    else renderTrace(r.open);
   };
   b$(".trace-btn").addEventListener("click", openTrace);
   b$(".m-trace").addEventListener("click", openTrace);
@@ -1892,6 +1900,10 @@
         break;
       case "ui":
         onUi(msg);
+        reply({ ok: true });
+        break;
+      case "trace-state":
+        renderTrace(msg.open);
         reply({ ok: true });
         break;
       case "bar-toggle":
