@@ -751,6 +751,9 @@ async function showTourItem(k, dir = 1) {
     src: it.done ? SOURCE_LABEL[it.source] || "" : "",
     back: hasBack,
     next: hasNext,
+    // Stops still to come stay faintly outlined and numbered; ones already explained drop away (Back
+    // brings them back).
+    marks: t.items.map((x, j) => ({ id: x.id, n: j + 1 })).filter((m, j) => j > k && !t.items[j].missing),
   });
   if (!r?.ok) {
     // The page re-rendered: find the tour's controls again by label.
@@ -1267,6 +1270,8 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
   }
   if (msg.type === "picked" && fromTab != null) return addPicked(msg.desc, msg.key || `k${Date.now()}`, fromTab, msg.again);
   if (msg.type === "pick-removed" && fromTab === pick.tabId) return removePicked(msg.key, false);
+  // A full page load took the picks' outlines with it: forget them, or the next question goes to them.
+  if (msg.type === "page-ready" && fromTab === pick.tabId && pick.items.length) clearPicked(false);
   if (msg.type === "pick-cleared" && fromTab === pick.tabId) return clearPicked(false);
   if (msg.type === "pick-finished") {
     setPicking(false);

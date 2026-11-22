@@ -530,7 +530,9 @@ const unplaceholder = (t) =>
     .replace(/\[(?:number|uuid|token|api-key|app-id)\]/gi, "the ID")
     .replace(/(^|[.!?]\s+)(your|the) /g, (_, a, w) => a + w[0].toUpperCase() + w.slice(1) + " ");
 
-export async function explainControl({ question, outline, item, detail = {}, docs = "", onText }) {
+export async function explainControl({ question, outline, item: rawItem, detail = {}, docs = "", onText }) {
+  // "Selected Tab: APIs" is the control's state plus its name; the model should only see the name.
+  const item = { ...rawItem, label: rawItem.label.replace(/^(?:selected|current|active)\s+(?:tab|item|page)\s*[:,-]\s*/i, "") };
   const base = `You are Waypoint, explaining a web app's UI to a developer.
 ${pageHeader(outline)}
 

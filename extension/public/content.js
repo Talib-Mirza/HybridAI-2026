@@ -541,6 +541,12 @@
       .pin-tag.compact:hover,.pin-tag.compact:focus-within{padding:2px 2px 2px 2px;z-index:2}
       .pin-tag.compact:hover .kind,.pin-tag.compact:hover .name,.pin-tag.compact:focus-within .kind,.pin-tag.compact:focus-within .name{display:inline}
       .pin-tag.compact:hover .unpin,.pin-tag.compact:focus-within .unpin{display:inline-block}
+      .mark{position:fixed;border:1.5px dashed rgba(255,178,36,.42);border-radius:7px;pointer-events:none;transition:opacity .2s}
+      .mark-n{position:fixed;min-width:18px;height:18px;padding:0 4px;box-sizing:border-box;border-radius:9px;background:var(--ink0);border:1px solid rgba(255,178,36,.7);color:var(--signal);font:700 10.5px/16px var(--mono);text-align:center;pointer-events:none}
+      .mini.idle .mini-o{border-color:var(--device)} .mini.idle .mini-o::after{background:var(--device)}
+      .mini.idle .pause,.mini.idle .end{display:none}
+      .mini .dismiss{display:none;min-width:24px;padding:0 6px;color:var(--muted)}
+      .mini.idle .dismiss{display:inline-block}
       .pin.hot{border-color:var(--signal);box-shadow:0 0 0 4px rgba(255,178,36,.22)}
       .pickbar{position:fixed;top:12px;left:50%;transform:translateX(-50%);display:none;align-items:center;gap:8px;max-width:calc(100vw - 24px);background:var(--ink1);color:var(--text);border:1px solid rgba(61,220,151,.55);border-radius:999px;padding:5px 6px 5px 12px;font:13px/1.3 var(--sans);box-shadow:0 10px 30px rgba(0,0,0,.4);pointer-events:auto;animation:drop .16s ease-out}
       .pickbar.open{display:flex}
@@ -644,6 +650,7 @@
       .mini .mini-act[hidden]{display:none}
       @media (prefers-reduced-motion:reduce){.ring,.bubble,.pill,.pill .dot,.scroll-icon,.spinner,.bubble.streaming .text::after,.pick,.bar,.mini,.mini .mini-o,.bstatus.busy::before{transition:none;animation:none}}
     </style>
+    <div class="marks"></div>
     <div class="ring"></div>
     <div class="pick"></div>
     <div class="pick-tag" role="status" aria-live="polite"><span class="kind"></span><span class="name"></span><span class="eye" hidden title="Gemini Nano will look at it">👁</span><span class="pstate"></span></div>
@@ -699,6 +706,7 @@
       <button class="mini-act pause" type="button" title="Pause">Pause</button>
       <button class="mini-act end" type="button" title="End">End</button>
       <button class="mini-act open primary" type="button" title="Open the bar (Alt+Shift+W)">Open</button>
+      <button class="mini-act dismiss" type="button" title="Hide until next time" aria-label="Hide">×</button>
     </div>`;
   document.documentElement.appendChild(host);
   if (!document.getElementById("waypoint-fonts")) {
@@ -746,7 +754,9 @@
     } catch {}
   }
   const anyVisible = () =>
-    ring.style.display === "block" || pillEl.style.display === "flex" || shadow.querySelector(".pick").style.display === "block" || !!shadow.querySelector(".pin") || shadow.querySelector(".pickbar").classList.contains("open");
+    ring.style.display === "block" || pillEl.style.display === "flex" || shadow.querySelector(".pick").style.display === "block" ||
+    (!!shadow.querySelector(".pin") && pinsShown) || !!shadow.querySelector(".mark") ||
+    [".pickbar", ".mini", ".bar"].some((c) => shadow.querySelector(c)?.classList.contains("open"));
   function lower() {
     if (anyVisible()) return;
     try { host.hidePopover(); } catch {}
@@ -993,6 +1003,7 @@
     covered = false;
     bubbleMode = mode === "explain" ? "explain" : mode === "pick" ? "pick" : "guide";
     ring.classList.remove("multi");
+    showPins(bubbleMode === "pick");
     pill(null);
     // The mini status follows along: what to do now, with Pause / End / Open next to it.
     if (barUsed && bubbleMode !== "pick" && !loading && !streaming) miniState("guide", title || text);
@@ -1043,7 +1054,8 @@
     cancelAnimationFrame(raf);
     ring.style.display = "none";
     bubble.style.display = "none";
-    if (wasPick && pins.length) runLoop(); // back to the pinned outlines
+    clearMarks();
+    if (wasPick) showPins(false);
     lower();
   }
 
@@ -1259,11 +1271,53 @@
     };
   }
 
+  // ---- Tour marks: stops still to come in an explain tour, faint and numbered ----
+  const marksLayer = shadow.querySelector(".marks");
+  let marks = []; // { el, box, badge }
+  function setMarks(list) {
+    clearMarks();
+    for (const { id, n } of list || []) {
+      let el = idToEl.get(id);
+      if (!el?.isConnected) continue;
+      const head = el.closest("th,[role=columnheader]"); // same as the ring: a column's ⓘ marks the column
+      if (head && head.getBoundingClientRect().width < 480) el = head;
+      const box = document.createElement("div");
+      box.className = "mark";
+      const badge = document.createElement("div");
+      badge.className = "mark-n";
+      badge.textContent = String(n);
+      marksLayer.append(box, badge);
+      marks.push({ el, box, badge });
+    }
+    if (marks.length) runLoop();
+  }
+  function clearMarks() {
+    for (const m of marks) m.box.remove(), m.badge.remove();
+    marks = [];
+  }
+  function drawMarks() {
+    for (const m of marks) {
+      const r = m.el.isConnected ? m.el.getBoundingClientRect() : null;
+      const off = !r || r.bottom < 0 || r.top > innerHeight || r.width === 0;
+      m.box.style.display = m.badge.style.display = off ? "none" : "";
+      if (off) continue;
+      Object.assign(m.box.style, { left: `${r.left - 3}px`, top: `${r.top - 3}px`, width: `${r.width + 6}px`, height: `${r.height + 6}px` });
+      Object.assign(m.badge.style, { left: `${Math.max(4, r.left - 9)}px`, top: `${Math.max(4, r.top - 11)}px` });
+    }
+  }
+
   // ---- Pins: everything picked so far, numbered in the order it was picked ----
   const MAX_PINS = 8;
   const pinsLayer = shadow.querySelector(".pins");
   const pickbar = shadow.querySelector(".pickbar");
   let pins = []; // { el, key, box, tag }
+  // Outlines show while picking, while the bar lists the picks and while their answer is open; closing
+  // the answer (or starting a guide or tour) puts them away. The picks themselves stay in the bar.
+  let pinsShown = true;
+  const showPins = (on) => {
+    pinsShown = on;
+    if (on && pins.length) raise(), runLoop();
+  };
   let pinSeq = 0;
   const pinOf = (el) => pins.find((p) => p.el === el);
 
@@ -1350,7 +1404,7 @@
         continue;
       }
       const r = p.el.getBoundingClientRect();
-      const off = r.bottom < 0 || r.top > innerHeight || r.width === 0;
+      const off = !pinsShown || r.bottom < 0 || r.top > innerHeight || r.width === 0;
       p.box.style.display = off ? "none" : "";
       p.tag.style.display = off || (picking && hoverChain[hoverLevel] === p.el) ? "none" : "";
       if (off) continue;
@@ -1368,7 +1422,8 @@
     pickLoop = requestAnimationFrame(loop);
     if (picking && hoverChain.length) drawBox(hoverChain[hoverLevel]);
     if (pins.length) drawPins();
-    if (!picking && !pins.length) cancelAnimationFrame(pickLoop);
+    if (marks.length) drawMarks();
+    if (!picking && !pins.length && !marks.length) cancelAnimationFrame(pickLoop);
   }
   function runLoop() {
     cancelAnimationFrame(pickLoop);
@@ -1386,6 +1441,7 @@
 
   function startPicking() {
     hide();
+    showPins(true);
     picking = true;
     hoverChain = [];
     hoverLevel = 0;
@@ -1497,6 +1553,7 @@
 
   async function openBar({ focus = true } = {}) {
     barUsed = true;
+    showPins(true);
     raise();
     miniEl.classList.remove("open");
     barEl.classList.add("open");
@@ -1512,6 +1569,7 @@
     barEl.classList.remove("open");
     closeMenu();
     if (snap && (snap.mode && snap.mode !== "idle" || snap.paused)) miniEl.classList.add("open");
+    else if (miniMode) miniState("done", "");
     lower();
   }
   const barOpen = () => barEl.classList.contains("open");
@@ -1621,18 +1679,14 @@
     if (text) b$(".mini-text").textContent = text;
     miniEl.classList.toggle("busy", mode === "busy");
     miniEl.classList.toggle("paused", mode === "paused");
+    // Finished: the pill stays as Waypoint's home base (what happened + Open), until dismissed.
+    miniEl.classList.toggle("idle", mode === "done");
     b$(".mini .pause").textContent = mode === "paused" ? "Resume" : "Pause";
-    if (!barOpen()) {
+    if (mode === "done" && (text || !b$(".mini-text").textContent)) b$(".mini-text").textContent = text || "Done";
+    clearTimeout(pillTimer);
+    if (!barOpen() && !picking) {
       raise();
       miniEl.classList.add("open");
-    }
-    if (mode === "done") {
-      b$(".mini-text").textContent = text || "Done";
-      clearTimeout(pillTimer);
-      pillTimer = setTimeout(() => {
-        miniEl.classList.remove("open");
-        lower();
-      }, 2600);
     }
   }
 
@@ -1721,6 +1775,10 @@
   b$(".mini .open").addEventListener("click", () => openBar());
   b$(".mini .end").addEventListener("click", () => {
     toBrain({ type: "bar:end" });
+    hide();
+    miniState("done", "Ended. Ask something else any time.");
+  });
+  b$(".mini .dismiss").addEventListener("click", () => {
     miniEl.classList.remove("open");
     lower();
   });
@@ -1747,7 +1805,9 @@
         break;
       case "paused":
         snap.paused = msg.on;
-        if (barUsed) miniState(msg.on ? "paused" : "busy", msg.on ? "Paused" : "");
+        // Un-pausing returns to following the guide; it never revives a finished or ended pill.
+        if (barUsed && msg.on) miniState("paused", "Paused");
+        else if (barUsed && miniMode === "paused") miniState("guide", "");
         break;
       case "replan":
         snap.replan = msg.visible;
@@ -1808,6 +1868,7 @@
           const head = msg.mode === "explain" && el.closest("th,[role=columnheader]");
           if (head && head.getBoundingClientRect().width < 480) el = head;
           show(el, msg);
+          if (msg.mode === "explain") setMarks(msg.marks);
           reply({ ok: true });
         } else reply({ ok: false });
         break;
