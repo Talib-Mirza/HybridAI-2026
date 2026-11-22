@@ -414,16 +414,26 @@ const TOUR_GENERIC = new Set(
 const DOC_LINK = /\b(learn more|view docs?|documentation|release notes)\b|opens? (in )?(a )?new (tab|window)|\bexternal\b/i;
 const aboutWholePage = (q) => /\b(this|the|current)\s+(page|screen|view)\b|\bhere\b|\bon (this|the) page\b/i.test(q);
 
+// The ⓘ next to a column or setting ("Learn more about verified requests") is the best anchor for
+// explaining that term: tour it as the term itself, not as a docs link.
+const HELP_FOR = /^(?:learn more about|more info(?:rmation)? (?:about|on)|help (?:for|with|on)|info(?:rmation)? about|about|what (?:is|are))\s+(?:the\s+)?(.{3,60}?)[.?]?$/i;
+function asTermAnchor(it) {
+  const m = it.label.match(HELP_FOR);
+  if (!m || /new (tab|window)|external/i.test(it.label)) return null;
+  const term = m[1].charAt(0).toUpperCase() + m[1].slice(1);
+  return { ...it, label: term, anchorLabel: it.label, context: [it.context, "help icon for this term"].filter(Boolean).join(" · ") };
+}
+
 export async function pickTour({ question, outline, max = 20 }) {
   const stems = new Set([...queryStems(question)].filter((st) => !TOUR_GENERIC.has(st)));
   const wholePage = aboutWholePage(question);
   const visible = outline.items
-    .map((it, idx) => ({ it, idx }))
+    .map((it, idx) => ({ it: asTermAnchor(it) || it, idx }))
     .filter(({ it }) => !it.expander && !/hidden/.test(it.state))
     // "This page" means its content, not the app's navigation around it.
     .filter(({ it }) => !wholePage || it.main || !/navigation/.test(it.context))
     // Doc links aren't controls worth a tour stop, unless the user is asking about docs.
-    .filter(({ it }) => /\bdocs?\b|documentation|learn more/i.test(question) || !DOC_LINK.test(it.label));
+    .filter(({ it }) => it.anchorLabel || /\bdocs?\b|documentation|learn more/i.test(question) || !DOC_LINK.test(it.label));
   if (!visible.length) return { items: [], source: "none", ms: 0, sent: "" };
 
   // "Explain this page" with nothing more specific: the tour is the page's main controls in reading
@@ -433,6 +443,13 @@ export async function pickTour({ question, outline, max = 20 }) {
     const main = visible.filter((x) => x.it.main);
     const pool = main.length >= 3 ? main : visible;
     return { items: pool.slice(0, max).map((x) => x.it), source: "none", ms: 0, sent: "", byOrder: true };
+  }
+  // The question names a term that has its own help icon ("What does Unverified requests mean?"): that's
+  // the answer, no model needed. Lists ("Verified and Unverified…") go to the model, which reads them better.
+  if (!/\band\b|,|&/i.test(question)) {
+    const q = ` ${question.toLowerCase().replace(/[^a-z0-9]+/g, " ")} `;
+    const named = visible.filter(({ it }) => it.anchorLabel && q.includes(` ${it.label.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()} `));
+    if (named.length === 1) return { items: [named[0].it], source: "none", ms: 0, sent: "", byName: true };
   }
   // Keyword matches first, then page content over navigation chrome; keep the top 40 in page order.
   const cands = visible
@@ -474,7 +491,7 @@ The user wants an explanation: "${question}"
 Controls on this page (id | role | label | context | state):
 ${compactLines(cands).join("\n")}
 
-Choose the controls whose explanation answers the request, in a sensible tour order. If they ask about one specific thing, choose just that one. If they ask about the whole page or a section, choose its meaningful content: settings, switches, tabs, table rows, key action buttons, at most ${max}. Skip site navigation and generic chrome (account menu, help, search, notifications, feedback, "learn more" links) unless asked.`;
+Choose the controls whose explanation answers the request, in a sensible tour order. If they ask about one specific thing, choose just that one. If they ask about the whole page or a section, choose its meaningful content: settings, switches, tabs, table rows, key action buttons, at most ${max}. Skip site navigation and generic chrome (account menu, help, search, notifications, feedback, "learn more" links) unless asked. A "help icon for this term" stands for that term (a column, status or setting): when the user asks what a term means, choose its help icon rather than a nearby tab or button.`;
   const t0 = performance.now();
   const r = (await model.generateContent(prompt)).response;
   const ids = [...new Set(JSON.parse(r.text()).ids || [])];
@@ -504,9 +521,9 @@ ${pageHeader(outline)}
 
 The user asked: "${question}"
 
-Explain this control:
+${item.anchorLabel ? "Explain this term shown on the page (a column, status or setting; the user reached it through its help icon). Say what it means and what its values tell the user, not what the icon does" : "Explain this control"}:
 - label: "${item.label}"
-- type: ${item.role}${item.state ? `\n- state: ${item.state}` : ""}${item.context ? `\n- context: ${item.context}` : ""}`;
+- type: ${item.anchorLabel ? "term" : item.role}${item.state ? `\n- state: ${item.state}` : ""}${item.context ? `\n- context: ${item.context}` : ""}`;
   const local = `${base}${detail.hint ? `\n- tooltip / description: ${detail.hint}` : ""}${detail.nearby ? `\n- text next to it on the page: "${detail.nearby}"` : ""}`;
   // Public docs text: fine for either model.
   const docsBlock = docs
@@ -514,7 +531,7 @@ Explain this control:
     : "";
   const rules = `
 
-Write 1 or 2 short sentences, at most ${docs ? 55 : 40} words: what it does and when or why someone would use it${docs ? ", grounded in the documentation above (a key detail, limit or trade-off it states is worth including)" : ""}. If it's a setting, status or table row, say what its current state or values mean. Start with a verb or the point itself (e.g. "Opens…", "Shows…", "Requires…"), not with the control's name. Be direct and confident; only hedge if the page gives no clue at all. Text in [brackets] was redacted for privacy: refer to it generically ("your project", "this app"). Plain text only, no markdown.`;
+Explain "${item.label}" only, even if the question mentions other things: other popups cover those. Write 1 or 2 short sentences, at most ${docs ? 55 : 40} words: what it does and when or why someone would use it${docs ? ", grounded in the documentation above (a key detail, limit or trade-off it states is worth including)" : ""}. If it's a setting, status or table row, say what its current state or values mean. Start with a verb or the point itself (e.g. "Opens…", "Shows…", "Requires…"), not with the control's name. Be direct and confident; only hedge if the page gives no clue at all. Text in [brackets] was redacted for privacy: refer to it generically ("your project", "this app"). Plain text only, no markdown.`;
 
   const run = async (mode, prompt) => {
     const model = getGenerativeModel(

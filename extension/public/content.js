@@ -1623,8 +1623,11 @@
         break;
       }
       case "show": {
-        const el = idToEl.get(msg.id);
+        let el = idToEl.get(msg.id);
         if (el && el.isConnected) {
+          // Explaining a column through its ⓘ: ring the whole header, so it's clear which column is meant.
+          const head = msg.mode === "explain" && el.closest("th,[role=columnheader]");
+          if (head && head.getBoundingClientRect().width < 480) el = head;
           show(el, msg);
           reply({ ok: true });
         } else reply({ ok: false });

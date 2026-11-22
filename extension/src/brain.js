@@ -631,7 +631,7 @@ async function explain(question, tabId) {
     log({
       kind: pick.source === "in_cloud" ? "in_cloud" : pick.source === "on_device" ? "on_device" : "info",
       title: `Tour: ${pick.items.length} control${pick.items.length === 1 ? "" : "s"} to explain`,
-      detail: `${pick.items.map((it) => it.label).join(" · ")} · ${pick.byOrder ? "the page's main controls in reading order, no AI call" : SOURCE_LABEL[pick.source] || pick.source}`,
+      detail: `${pick.items.map((it) => it.label).join(" · ")} · ${pick.byOrder ? "the page's main controls in reading order, no AI call" : pick.byName ? "named in the question, no AI call" : SOURCE_LABEL[pick.source] || pick.source}`,
       sent: pick.sent,
       ms: pick.ms,
     });
@@ -769,7 +769,7 @@ async function remapTour() {
   const used = new Set();
   let changed = false;
   for (const it of t.items) {
-    const hit = outline.items.find((x) => !used.has(x.id) && x.label === it.label && x.role === it.role);
+    const hit = outline.items.find((x) => !used.has(x.id) && x.label === (it.anchorLabel || it.label) && x.role === it.role);
     if (hit) {
       used.add(hit.id);
       if (hit.id !== it.id) changed = true;
