@@ -36,6 +36,12 @@ body { padding: 16px 16px 24px; }
 .status { color: var(--muted); font-size: 12.5px; margin: 0 0 18px; }
 .status .kbd { margin: 0 2px; }
 
+.outage { display: flex; align-items: center; justify-content: space-between; gap: 10px; flex-wrap: wrap; margin: -6px 0 18px; }
+.outage .kicker { color: var(--muted); cursor: help; }
+.outage.on .kicker { color: var(--signal-text); }
+.outage.on .filters button[aria-checked="true"] { color: var(--signal-text); }
+.nano.warn { color: var(--signal-text); }
+
 .r-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
 .r-head h2 { font: 700 18px/1 var(--font-display); letter-spacing: .06em; text-transform: uppercase; margin: 0; }
 .filters { display: inline-flex; background: var(--surface-2); border-radius: 8px; padding: 2px; }

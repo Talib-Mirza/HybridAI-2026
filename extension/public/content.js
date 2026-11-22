@@ -585,6 +585,7 @@
       .nano .dot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--muted)}
       .nano.ready .dot{background:var(--device);box-shadow:0 0 0 3px rgba(61,220,151,.18)}
       .nano.warn{color:var(--signal)} .nano.warn .dot{background:var(--signal)}
+      .nano.solo .dot{box-shadow:0 0 0 3px rgba(255,178,36,.35)}
       .head-right{justify-self:end;display:flex;align-items:center;gap:4px}
       .warnwrap{position:relative;display:inline-flex}
       .sitewarn{color:var(--signal)}
@@ -821,7 +822,9 @@
   // × pauses rather than ends: the guide can be resumed from the chip or the side panel.
   $s(".x").addEventListener("click", () => {
     if (bubbleMode === "pick") {
+      // Closing the answer ends that conversation: the brain lets go of the picks.
       hide();
+      safeSend({ type: "pick-closed" });
       return;
     }
     const wasExplain = bubbleMode === "explain";
@@ -1694,10 +1697,27 @@
 
   function renderNano() {
     const n = snap?.nano || { state: "checking", text: "Checking Nano…" };
+    const ai = snap?.ai || { device: n.state === "ready", cloud: true, sim: "none" };
     const btn = b$(".nano");
-    btn.className = `nano ${n.state === "ready" ? "ready" : n.state === "checking" || n.state === "warming" ? "" : "warn"}`;
-    b$(".nano-text").textContent = n.state === "ready" ? "Nano" : n.state === "warming" ? "Waking…" : n.state === "checking" ? "Checking…" : "Set up Nano";
-    btn.title = n.state === "ready" ? `Gemini Nano is running on this device${n.vision ? ", and can look at charts and icons" : ""}` : n.text || "";
+    const ready = n.state === "ready" && !ai.deviceOff;
+    const pending = n.state === "checking" || n.state === "warming";
+    // What can run right now: Nano and the cloud, one of them (graceful degradation), or neither.
+    const SIM = { "no-nano": "Test: no Nano", "no-cloud": "Test: no cloud", neither: "Test: no AI" };
+    let text = ready ? (ai.cloud ? "Nano" : "Nano only") : pending ? (n.state === "warming" ? "Waking…" : "Checking…") : ai.cloud ? "Set up Nano" : "No AI";
+    if (SIM[ai.sim]) text = SIM[ai.sim];
+    btn.className = `nano ${ready ? "ready" : pending ? "" : "warn"}${!ai.cloud && ready ? " solo" : ""}`;
+    b$(".nano-text").textContent = text;
+    const nanoLine = ready
+      ? `Gemini Nano is running on this device${n.vision ? ", and can look at charts and icons" : ""}.`
+      : ai.deviceOff
+        ? "Gemini Nano is off for this test."
+        : pending
+          ? n.text || "Checking Gemini Nano…"
+          : `${n.text || "Gemini Nano isn't ready"}. Click to set it up.`;
+    const cloudLine = ai.cloud
+      ? ready ? "" : " Cloud Gemini answers meanwhile, with less of the page's text."
+      : ` Cloud Gemini is unavailable (${ai.cloudWhy}).${ready ? " Guides find one step at a time on this device." : " Only exact page names work until one of them is back."}`;
+    btn.title = `${nanoLine}${cloudLine}${SIM[ai.sim] ? " This is a simulated outage: turn it off in Trace." : ""}`;
   }
   /**
    * Site access lives in Settings. The bar only speaks up when this site isn't kept on: a small warning
@@ -1882,7 +1902,7 @@
   b$(".m-trace").addEventListener("click", openTrace);
   b$(".m-setup").addEventListener("click", () => toSW({ type: "onboarding" }));
   b$(".nano").addEventListener("click", () => {
-    if (snap?.nano?.state !== "ready") toSW({ type: "onboarding", hash: "nano" });
+    if (snap?.nano?.state !== "ready" && !snap?.ai?.deviceOff) toSW({ type: "onboarding", hash: "nano" });
   });
   b$(".gear").addEventListener("click", () => {
     const m = b$(".menu");
@@ -1940,6 +1960,10 @@
         break;
       case "nano":
         snap.nano = msg.nano;
+        renderNano();
+        break;
+      case "ai":
+        snap.ai = msg.ai;
         renderNano();
         break;
       case "route":

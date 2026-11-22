@@ -400,6 +400,7 @@ Rules:
   try {
     return await run(PLANNER_MODEL, 15_000);
   } catch (e) {
+    if (e?.unavailable) throw e; // the cloud is down: another cloud model won't help
     console.warn("[Waypoint] planner fallback:", e?.message);
     return await run(CLOUD_MODEL, 30_000);
   }
@@ -525,7 +526,17 @@ ${compactLines(cands).join("\n")}
 
 Choose the controls whose explanation answers the request, in a sensible tour order. If they ask about one specific thing, choose just that one. If they ask about a group (rows, tabs, settings, a table), choose every member of it. If they ask about the whole page or a section, choose its meaningful content: settings, switches, tabs, table rows, key action buttons, at most ${max}. Skip site navigation and generic chrome (account menu, help, search, notifications, feedback, "learn more" links) unless asked. A "help icon for this term" stands for that term (a column, status or setting): when the user asks what a term means, choose its help icon rather than a nearby tab or button.`;
   const t0 = performance.now();
-  const r = (await model.generateContent(prompt)).response;
+  let r;
+  try {
+    r = (await model.generateContent(prompt)).response;
+  } catch (e) {
+    // No model reachable: the best keyword matches (or the page's main content), in page order.
+    console.warn("[Waypoint] tour without AI:", e?.message);
+    // Only controls the question names: guessing at a tour without a model gives generic stops ("More options").
+    const named = (c) => words(c.anchorLabel || c.label).some((w) => stems.has(stem(w)));
+    const items = (stems.size ? cands.filter(named) : []).slice(0, Math.min(max, 8));
+    return { items, source: "none", ms: Math.round(performance.now() - t0), sent: "", byKeywords: true, error: e };
+  }
   const ids = [...new Set(JSON.parse(r.text()).ids || [])];
   const byId = new Map(cands.map((c) => [c.id, c]));
   const order = new Map(outline.items.map((it, n) => [it.id, n]));

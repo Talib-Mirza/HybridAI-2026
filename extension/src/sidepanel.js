@@ -62,13 +62,35 @@ function renderRoute(route) {
     ol.appendChild(li);
   });
 }
-function renderNano(n) {
-  const ready = n?.state === "ready";
-  $("nano").className = `nano ${ready ? "ready" : "warn"}`;
-  $("nano").querySelector(".dot").className = `dot ${ready ? "device" : n?.state === "checking" || n?.state === "warming" ? "off" : "signal"}`;
-  $("nano-text").textContent = ready ? `Nano ready${n.vision ? " · vision" : ""}` : n?.text || "Checking Nano…";
-  $("nano").title = ready && n.warmupMs ? `Warmed up in ${n.warmupMs} ms, kept loaded on this device` : "";
+let nano = null;
+let ai = null;
+function renderNano(n = nano) {
+  nano = n;
+  const ready = n?.state === "ready" && !ai?.deviceOff;
+  const pending = n?.state === "checking" || n?.state === "warming";
+  const cloud = ai ? ai.cloud : true;
+  $("nano").className = `nano ${ready ? "ready" : pending ? "" : "warn"}`;
+  $("nano").querySelector(".dot").className = `dot ${ready ? "device" : pending ? "off" : "signal"}`;
+  const nanoText = ai?.deviceOff ? "Nano off" : ready ? `Nano ready${n.vision ? " · vision" : ""}` : n?.text || "Checking Nano…";
+  $("nano-text").textContent = cloud ? nanoText : `${nanoText} · cloud down`;
+  $("nano").title = [
+    ready && n.warmupMs ? `Warmed up in ${n.warmupMs} ms, kept loaded on this device.` : "",
+    cloud ? "" : `Cloud Gemini is unavailable (${ai.cloudWhy}).`,
+  ].filter(Boolean).join(" ");
 }
+function renderAI(next) {
+  ai = next;
+  const sim = ai?.sim || "none";
+  $("sim").querySelectorAll("button").forEach((b) => b.setAttribute("aria-checked", String(b.dataset.sim === sim)));
+  document.querySelector(".outage").classList.toggle("on", sim !== "none");
+  renderNano();
+}
+$("sim").querySelectorAll("button").forEach((b) =>
+  b.addEventListener("click", () => {
+    renderAI({ ...(ai || {}), sim: b.dataset.sim });
+    chrome.runtime.sendMessage({ type: "bar:settings", settings: { sim: b.dataset.sim } }).catch(() => {});
+  })
+);
 
 document.querySelectorAll(".filters button").forEach((b) =>
   b.addEventListener("click", () => {
@@ -84,6 +106,7 @@ chrome.runtime.onMessage.addListener((msg) => {
   else if (msg.type === "status") $("status").textContent = msg.text;
   else if (msg.type === "route") renderRoute(msg.route);
   else if (msg.type === "nano") renderNano(msg.nano);
+  else if (msg.type === "ai") renderAI(msg.ai);
   return false;
 });
 
@@ -105,6 +128,8 @@ announce();
   entries = s.logs || [];
   renderLog();
   renderRoute(s.route);
+  ai = s.ai;
+  renderAI(s.ai);
   renderNano(s.nano);
   if (s.status) $("status").textContent = s.status;
 })();

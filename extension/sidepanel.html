@@ -26,6 +26,16 @@
     </section>
     <p id="status" class="status">Open the Waypoint bar on any page (<span class="kbd">Alt</span><span class="kbd">Shift</span><span class="kbd">W</span>) and ask. Every AI call shows up here.</p>
 
+    <section class="outage" aria-label="Simulate an outage">
+      <span class="kicker" title="Turn Gemini Nano or cloud Gemini off to see how Waypoint degrades. Real outages are handled the same way.">Simulate an outage</span>
+      <div class="filters" id="sim" role="radiogroup" aria-label="Simulate an outage">
+        <button type="button" role="radio" aria-checked="true" data-sim="none">Off</button>
+        <button type="button" role="radio" aria-checked="false" data-sim="no-nano">No Nano</button>
+        <button type="button" role="radio" aria-checked="false" data-sim="no-cloud">No cloud</button>
+        <button type="button" role="radio" aria-checked="false" data-sim="neither">Neither</button>
+      </div>
+    </section>
+
     <section class="receipts">
       <div class="r-head">
         <h2>Receipts</h2>

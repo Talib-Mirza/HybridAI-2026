@@ -4,6 +4,7 @@
 // side panel. Offscreen documents can only use chrome.runtime, so tabs / scripting / permissions calls go
 // through the service worker (see background.js, "router").
 import { docLookup, clearDocsCache } from "./docs.js";
+import { setSimulation, onAvailabilityChange, cloudProblem, deviceUsable } from "./firebase-ext.js";
 import { pickElement, planRoute, hasKeywordHit, exactMatch, closeMatch, kindFits, alreadyHere, looksDone, specificToGoal, arrivedAt, namesNavTarget, navTarget, looksLikeExplain, pickTour, explainControl, chooseMode, readDocs, suggestDocs, answerAboutElement } from "./pipeline.js";
 
 // ---------- chrome.* through the service worker ----------
@@ -28,11 +29,12 @@ globalThis.__wpPermContains = C.permissions.contains; // docs.js checks fetch pe
 
 // ---------- What the UIs show ----------
 // One broadcast to the Trace panel (runtime message) and to the page's command bar (content script).
-const settings = { cloudOnly: false };
+const settings = { cloudOnly: false, sim: "none" }; // sim: Trace's "Simulate an outage" (none | no-nano | no-cloud | neither)
 try { Object.assign(settings, JSON.parse(localStorage.getItem("waypoint-settings") || "{}")); } catch {}
+setSimulation(settings.sim);
 const saveSettings = () => { try { localStorage.setItem("waypoint-settings", JSON.stringify(settings)); } catch {} };
 const logs = []; // receipts, newest first (the Trace panel shows them)
-const view = { status: "", nano: { state: "checking" }, route: null, paused: false, replan: false, picking: false, grant: null };
+const view = { status: "", nano: { state: "checking" }, ai: null, route: null, paused: false, replan: false, picking: false, grant: null };
 function ui(type, data = {}) {
   chrome.runtime.sendMessage({ to: "ui", type, ...data }).catch(() => {});
   const tab = state.tabId ?? pick.tabId;
@@ -64,6 +66,33 @@ const state = {
   tour: null, // explain mode: { outline, items: [{ id, label, role, detail, text, started, done, source }], idx }
 };
 let nanoReady = false;
+/** Gemini Nano is loaded and not switched off by an outage test. */
+const nanoOn = () => nanoReady && deviceUsable();
+
+// ---------- Availability (graceful degradation) ----------
+// What the bar and Trace show about which side can run: Nano on this device, cloud Gemini, both or neither.
+function aiView() {
+  const cloudWhy = cloudProblem();
+  return { device: nanoOn(), deviceOff: !deviceUsable(), cloud: !cloudWhy, cloudWhy, sim: settings.sim || "none" };
+}
+function refreshAI() {
+  const next = aiView();
+  if (JSON.stringify(next) === JSON.stringify(view.ai)) return;
+  view.ai = next;
+  ui("ai", { ai: next });
+}
+onAvailabilityChange(refreshAI);
+addEventListener("online", refreshAI);
+addEventListener("offline", refreshAI);
+/** An error, in words a person can act on. */
+function friendly(e) {
+  const a = aiView();
+  const nano = a.deviceOff ? "Gemini Nano is turned off by Simulate an outage" : "Gemini Nano isn't ready on this device";
+  if (!a.cloud && !a.device) return `No AI is available right now: ${nano}, and cloud Gemini is unavailable (${a.cloudWhy}).`;
+  if (e?.unavailable === "cloud" || (!a.cloud && !e?.unavailable)) return `Cloud Gemini is unavailable (${a.cloudWhy || e?.reason || "it couldn't be reached"}).`;
+  if (e?.unavailable === "device") return `${nano}.`;
+  return `Something went wrong: ${e?.message || e}`;
+}
 
 let stepTimer = 0;
 /** Single-flight step search: a click and a page change often arrive together; only the last one runs. */
@@ -233,6 +262,8 @@ const docsTextFor = (d, query, max = 1800, phrase = "", opts = {}) => (!d || d.h
 // ---------- Core flow ----------
 
 const MAX_AUTO_REPLANS = 2;
+const MAX_HOPS = 6; // on-device guiding (cloud down): at most this many pages, one step at a time
+const replansLeft = () => state.replans < (state.local ? MAX_HOPS : MAX_AUTO_REPLANS);
 
 /**
  * Where to put the bubble for an outline item. A control hidden inside a collapsed menu is shown on the
@@ -317,7 +348,7 @@ async function reportDone(item, where) {
 
 async function ask(question, tabId) {
   const gen = ++state.gen;
-  Object.assign(state, { tabId, mode: "idle", goal: question, steps: [], i: 0, replans: 0, revealing: false, single: null, recover: null, docsP: null, docUrl: null });
+  Object.assign(state, { tabId, mode: "idle", goal: question, steps: [], i: 0, replans: 0, local: false, revealing: false, single: null, recover: null, docsP: null, docUrl: null });
   setPaused(false);
   renderSteps();
   setReplan(false);
@@ -375,11 +406,14 @@ async function ask(question, tabId) {
   } catch (e) {
     console.error(e);
     chip(null);
-    status(`Error: ${e?.message || e}`);
+    const a = aiView();
+    status(`${friendly(e)}${a.device || a.cloud ? "" : ' Waypoint can still point at a page you name exactly, like "Open Settings".'}`);
   }
 }
 
 async function escalate(goal, outline, gen, { pick = null, failed = null, unfinished = false, vanished = false } = {}) {
+  // The cloud is known to be down: don't wait for it, take the next step on this device.
+  if (cloudProblem()) return hopOnDevice(goal, outline, gen, null, { pick: failed || unfinished ? null : pick });
   const done = state.steps.slice(0, state.i).map((s) => s.target);
   log({
     kind: "escalate",
@@ -402,8 +436,16 @@ async function escalate(goal, outline, gen, { pick = null, failed = null, unfini
   if (gen !== state.gen) return;
   const docsText = docsTextFor(docs, goal, 2000, "", { ui: true });
   if (docsText) state.docUrl = docs.urlFor(goal);
-  const plan = await planRoute({ goal, outline, done, failed, unfinished, vanished, docs: docsText });
+  let plan;
+  try {
+    plan = await planRoute({ goal, outline, done, failed, unfinished, vanished, docs: docsText });
+  } catch (e) {
+    if (gen !== state.gen) return;
+    console.warn("[Waypoint] route planning failed", e);
+    return hopOnDevice(goal, outline, gen, e, { pick: failed || unfinished ? null : pick });
+  }
   state.recover = vanished ? failed : null;
+  state.local = false; // the cloud is back
   if (gen !== state.gen) return;
   log({
     kind: "in_cloud",
@@ -436,7 +478,7 @@ async function runStep(gen, attempt, run) {
     const destination = lastStep.kind === "navigation" || /^(?:view|open|go to|see|browse|visit)\b/i.test(last);
     const arrived = destination && arrivedAt(last, outline);
     if (arrived) log({ kind: "info", title: `Arrived at "${last}"`, detail: "The page now shows where the last step leads, so the route is complete. No AI call." });
-    if (!arrived && !specificToGoal(state.goal, last, outline) && state.replans < MAX_AUTO_REPLANS) {
+    if (!arrived && !specificToGoal(state.goal, last, outline) && replansLeft()) {
       state.replans += 1;
       await escalate(state.goal, outline, gen, { unfinished: true });
       return;
@@ -507,7 +549,7 @@ async function runStep(gen, attempt, run) {
       if (await reportDone(hit, where)) return;
       state.steps[j].shown = hit.label;
       state.steps[j].shownPath = outline.path;
-      await show(where, { step: of(), text: state.steps[j].instruction });
+      await show(where, { step: of(), text: state.steps[j].instruction, why: state.steps[j].local ? LOCAL_WHY : undefined, src: state.steps[j].local ? SOURCE_LABEL.on_device : undefined });
       status(where.reveal ? where.revealText : state.steps[j].instruction);
       return;
     }
@@ -536,7 +578,7 @@ async function runStep(gen, attempt, run) {
     // The current step's control was showing on this very page a moment ago and is gone now (a drawer
     // or menu closed). Nano would only guess at a lookalike; plan the way back to it instead.
     const cur = state.steps[state.i];
-    if (cur.shown && cur.shownPath === outline.path && state.replans < MAX_AUTO_REPLANS) {
+    if (cur.shown && cur.shownPath === outline.path && replansLeft()) {
       state.replans += 1;
       await escalate(state.goal, outline, gen, { failed: cur.target, vanished: true });
       return;
@@ -587,7 +629,7 @@ async function runStep(gen, attempt, run) {
     if (stale()) return;
     // Nano looked and only found wrong candidates: asking it again won't help, the plan is wrong for
     // this page. Re-plan now instead of after four slow tries.
-    if (rejected && state.replans < MAX_AUTO_REPLANS) {
+    if (rejected && replansLeft()) {
       state.replans += 1;
       await escalate(state.goal, outline, gen, { failed: state.steps[state.i].target });
       return;
@@ -597,7 +639,7 @@ async function runStep(gen, attempt, run) {
       status("Waiting for the page to load…");
       busy("Waiting for the page…");
       stepTimer = setTimeout(() => runStep(gen, attempt + 1, run), 900);
-    } else if (state.replans < MAX_AUTO_REPLANS) {
+    } else if (replansLeft()) {
       // Rung 3, cloud: re-plan from what's actually on screen. If this step's control was showing on this
       // very page a moment ago, it didn't move: a menu or drawer closed, and the plan should reopen it.
       state.replans += 1;
@@ -610,8 +652,51 @@ async function runStep(gen, attempt, run) {
   } catch (e) {
     console.error(e);
     chip(null);
-    status(`Error: ${e?.message || e}`);
+    status(friendly(e));
   }
+}
+
+/**
+ * Graceful degradation for guides: cloud Gemini can't plan the route (offline, quota, outage), so Gemini
+ * Nano picks the next control toward the goal on each page, one step at a time. After each click the
+ * route "ends short of the goal" and comes back here for the next page, until a control that names the
+ * goal is reached (or MAX_HOPS pages). Nothing leaves the device.
+ */
+const LOCAL_WHY = "Cloud Gemini is unavailable, so Gemini Nano finds one step at a time on this device.";
+async function hopOnDevice(goal, outline, gen, err, { pick = null } = {}) {
+  const why = err?.reason || cloudProblem() || "it couldn't be reached";
+  if (!nanoOn()) {
+    log({ kind: "info", title: "No AI available to plan a route", detail: `Cloud Gemini is unavailable (${why}) and ${deviceUsable() ? "Gemini Nano isn't ready on this device" : "Gemini Nano is turned off by Simulate an outage"}.` });
+    chip(null);
+    state.mode = "idle";
+    renderSteps();
+    status(`${friendly(err)} Waypoint can still point at a page you name exactly, like "Open Settings".`);
+    return;
+  }
+  if (!state.local) log({ kind: "info", title: "Cloud unavailable: guiding on this device", detail: `Cloud Gemini is unavailable (${why}). Gemini Nano picks the next control on each page instead of planning the whole route; nothing leaves this device.` });
+  state.local = true;
+  status("Cloud Gemini is unavailable, so Gemini Nano is finding the next step on this device…");
+  busy("Finding the next step on this device…");
+  let res;
+  if (pick && pick.elementId !== "none") {
+    const where = placement(outline, pick.elementId, pick.opensMenu);
+    res = { outline, pick, where, found: !!(await send(state.tabId, { type: "check", id: where.showId }))?.ok };
+  } else res = await locate(goal, gen);
+  if (!res || gen !== state.gen) return;
+  const item = res.found && res.outline.items.find((it) => it.id === res.pick.elementId);
+  const kept = state.steps.slice(0, state.i);
+  const repeat = item && kept.some((st) => st.shown === item.label && st.donePath === res.outline.path);
+  if (!item || /current|selected|expanded/.test(item.state) || repeat) {
+    log({ kind: "info", title: "No next step found on this device", detail: item ? `Gemini Nano pointed at "${item.label}" again, which doesn't move the guide forward.` : "Gemini Nano found no control on this page that leads toward the goal." });
+    chip(null);
+    status(`Cloud Gemini is unavailable (${why}), and Gemini Nano can't see the next step on this page. Get closer by hand, or Re-plan once the cloud is back.`);
+    setReplan(true);
+    return;
+  }
+  const step = { target: item.label, instruction: `Use "${item.label}".`, kind: "", where: "", local: true };
+  Object.assign(state, { mode: "route", steps: [...kept, step], i: kept.length });
+  renderSteps();
+  scheduleStep(0);
 }
 
 // ---------- Explain mode: a streamed tour ----------
@@ -645,7 +730,7 @@ async function explain(question, tabId) {
     if (!pick.items.length) {
       chip(null);
       state.mode = "idle";
-      status("I couldn't find anything on this page that matches. Try naming the setting or section.");
+      status(pick.error ? `${friendly(pick.error)} Without it, Waypoint can only explain controls you name exactly.` : "I couldn't find anything on this page that matches. Try naming the setting or section.");
       return;
     }
     const details = (await send(tabId, { type: "describe", ids: pick.items.map((it) => it.id) })) || [];
@@ -669,7 +754,7 @@ async function explain(question, tabId) {
   } catch (e) {
     console.error(e);
     chip(null);
-    status(`Error: ${e?.message || e}`);
+    status(friendly(e));
   }
 }
 
@@ -720,7 +805,10 @@ async function runExplainer(gen) {
       log({ kind: r.source === "in_cloud" ? "in_cloud" : "on_device", title: `Explain "${it.label}"`, detail: SOURCE_LABEL[r.source] || r.source, sent: r.sent, ms: r.ms });
     } catch (e) {
       if (gen !== state.gen) return;
-      Object.assign(it, { text: "Couldn't write an explanation for this one.", done: true, source: "none" });
+      // No model could write it: the page's own description is better than nothing.
+      const hint = it.detail?.hint && it.detail.hint !== it.label ? it.detail.hint : "";
+      Object.assign(it, { text: hint ? `From the page: ${hint}` : aiView().device || aiView().cloud ? "Couldn't write an explanation for this one." : "No AI is available to explain this right now. Point at the Nano label in the bar to see why.", done: true, source: "none" });
+      log({ kind: "info", title: `Explain "${it.label}": no AI`, detail: hint ? `${friendly(e)} Showing the page's own description instead.` : friendly(e) });
       console.warn("[Waypoint] explain failed", e);
     }
     push(true);
@@ -750,7 +838,7 @@ async function showTourItem(k, dir = 1) {
     loadingText:
       t.docs === undefined && t.docsP
         ? "Reading the official docs…"
-        : nanoReady
+        : nanoOn()
           ? "Gemini Nano is writing this on your device…"
           : "Writing an explanation…",
     docUrl: it.done ? it.docUrl : null,
@@ -978,7 +1066,7 @@ async function answerPick(question) {
   state.tabId = tabId;
   const names = els.map((d) => d.name);
   const looks = els.some((d) => d.vision);
-  const loadingText = looks ? `Gemini Nano is looking at ${one ? "it" : "them"}, on your device…` : nanoReady ? "Gemini Nano is thinking, on your device…" : "Thinking…";
+  const loadingText = looks ? `Gemini Nano is looking at ${one ? "it" : "them"}, on your device…` : nanoOn() ? "Gemini Nano is thinking, on your device…" : "Thinking…";
   const shown = await send(tabId, {
     type: "pick-show",
     step: one ? els[0].kind : `${els.length} picks`,
@@ -1050,8 +1138,8 @@ async function answerPick(question) {
     ui("query", { text: "" });
   } catch (e) {
     console.error(e);
-    send(tabId, { type: "update", text: `Couldn't answer: ${e?.message || e}`, loading: false, streaming: false }).catch(() => {});
-    status(`Error: ${e?.message || e}`);
+    send(tabId, { type: "update", text: `Couldn't answer. ${friendly(e)}`, loading: false, streaming: false }).catch(() => {});
+    status(friendly(e));
   }
 }
 
@@ -1089,6 +1177,7 @@ async function resume() {
 }
 
 function endGuide() {
+  if (state.mode === "pick") clearPicked(true); // End on an answer also lets go of what was picked
   state.gen++;
   clearTimeout(stepTimer);
   Object.assign(state, { mode: "idle", single: null, tour: null });
@@ -1173,7 +1262,7 @@ async function handle(question, tabId) {
   } catch (e) {
     if (token !== routeToken) return;
     chip(null);
-    status(`Error: ${e?.message || e}`);
+    status(friendly(e));
   }
 }
 
@@ -1181,7 +1270,7 @@ async function replanNow() {
   const gen = state.gen;
   setReplan(false);
   const outline = await send(state.tabId, { type: "outline" });
-  escalate(state.goal, outline, gen, { failed: state.steps[state.i]?.target || "(unknown)" }).catch((e) => status(`Error: ${e?.message}`));
+  escalate(state.goal, outline, gen, { failed: state.steps[state.i]?.target || "(unknown)" }).catch((e) => status(friendly(e)));
 }
 
 /** A question from the command bar: about the picked element, or a new request. */
@@ -1223,7 +1312,9 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
   if (msg.type === "bar:settings") {
     Object.assign(settings, msg.settings || {});
     saveSettings();
+    setSimulation(settings.sim);
     ui("settings", { settings });
+    refreshAI();
     return;
   }
   if (msg.type === "brain:granted") {
@@ -1253,6 +1344,15 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
     })();
     return;
   }
+  // Test hook for graceful degradation (same as Trace's "Simulate an outage"): ({ __waypoint: "sim", q: "no-cloud" }).
+  if (msg.type === "page-command" && msg.command === "sim") {
+    settings.sim = ["no-nano", "no-cloud", "neither"].includes(msg.q) ? msg.q : "none";
+    saveSettings();
+    setSimulation(settings.sim);
+    ui("settings", { settings });
+    refreshAI();
+    return;
+  }
   // Test hooks for the picker: window.postMessage({ __waypoint: "pick" }) / ({ __waypoint: "pick-ask", q }).
   if (msg.type === "page-command" && msg.command === "pick") return void startPick(fromTab);
   if (msg.type === "page-command" && msg.command === "pick-ask" && msg.q && pick.items.length) {
@@ -1280,6 +1380,15 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
   // A full page load took the picks' outlines with it: forget them, or the next question goes to them.
   if (msg.type === "page-ready" && fromTab === pick.tabId && pick.items.length) clearPicked(false);
   if (msg.type === "pick-cleared" && fromTab === pick.tabId) return clearPicked(false);
+  // The user closed the answer: that conversation is over, so its picks go too (otherwise the next
+  // question typed in the bar would still be about them).
+  if (msg.type === "pick-closed" && fromTab === pick.tabId) {
+    if (state.mode === "pick") Object.assign(state, { mode: "idle" });
+    state.gen++;
+    clearPicked(true);
+    status("Ask anything, or pick something on the page.");
+    return;
+  }
   if (msg.type === "pick-finished") {
     setPicking(false);
     renderPickCard(); // opens the bar with the picks
@@ -1346,6 +1455,7 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
 function setNano(next) {
   view.nano = next;
   ui("nano", { nano: next });
+  refreshAI();
 }
 // Runs at startup, and again when onboarding finishes downloading the model.
 let nanoStarting = null;
