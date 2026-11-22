@@ -44,3 +44,32 @@ chrome.runtime.onInstalled.addListener(refresh);
 chrome.runtime.onStartup.addListener(refresh);
 chrome.permissions.onAdded.addListener(refresh);
 chrome.permissions.onRemoved.addListener(() => syncContentScripts().catch(() => {}));
+
+// ---------- Ask about an element: right-click menu and keyboard shortcut ----------
+
+function addMenu() {
+  chrome.contextMenus.create({ id: "waypoint-ask", title: "Ask Waypoint about this", contexts: ["all"] }, () => void chrome.runtime.lastError);
+}
+chrome.runtime.onInstalled.addListener(addMenu);
+chrome.runtime.onStartup.addListener(addMenu);
+
+chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+  if (info.menuItemId !== "waypoint-ask" || !tab?.id) return;
+  // Opening the panel needs the user's gesture, so it happens first, before anything is awaited.
+  chrome.sidePanel.open({ tabId: tab.id }).catch(() => {});
+  try {
+    const desc = await chrome.tabs.sendMessage(tab.id, { type: "w2:pick-from-context" });
+    if (desc) {
+      // The panel may still be opening: leave the pick where it will look when it starts.
+      await chrome.storage.session.set({ pendingPick: { tabId: tab.id, desc, at: Date.now() } });
+    }
+  } catch {
+    // Waypoint isn't allowed on this site yet: the panel opens and offers to turn it on.
+  }
+});
+
+chrome.commands.onCommand.addListener(async (command, tab) => {
+  if (command !== "start-pick" || !tab?.id) return;
+  chrome.sidePanel.open({ tabId: tab.id }).catch(() => {});
+  chrome.tabs.sendMessage(tab.id, { type: "w2:pick-start" }).catch(() => {});
+});

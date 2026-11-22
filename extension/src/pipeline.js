@@ -675,3 +675,72 @@ ${labels.length ? `Related controls on their screen: ${labels.slice(0, 12).map((
   const home = /^https:\/\//.test(out.home || "") ? out.home : "";
   return { urls, home, ms: Math.round(performance.now() - t0), sent: prompt };
 }
+
+// ---------- Ask about a picked element ----------
+
+/**
+ * Answer a question about the element the user picked. On-device first, with everything: its text, state,
+ * surroundings, the docs and (for charts, images and icons) a screenshot of just that element. If Nano
+ * isn't available, the cloud gets only the element's kind, name and state plus the public docs: never the
+ * page's text or the image.
+ */
+export async function answerAboutElement({ question, el, history = [], docs = "", image = null, onText }) {
+  const docsBlock = docs ? `From the app's official documentation:\n"""\n${docs}\n"""\n` : "";
+  const historyBlock = history.length ? `Earlier in this conversation:\n${history.map((h) => `Q: ${h.q}\nA: ${h.a}`).join("\n")}\n` : "";
+  const head = `You are Waypoint, helping a developer understand a web app. They selected one element on the page and asked about it.
+Page: ${el.pageTitle}
+Selected: ${el.kind} "${el.name}"${el.state ? ` (state: ${el.state})` : ""}
+${el.context ? `Where it is: ${el.context}\n` : ""}`;
+  const local = `${head}${el.fields ? `Its columns: ${el.fields}\n` : el.text && el.text !== el.name ? `Its text: """${el.text}"""\n` : ""}${el.hint ? `Tooltip: ${el.hint}\n` : ""}${el.nearby ? `Text next to it: """${el.nearby}"""\n` : ""}${image ? `A screenshot of exactly this element is attached: read it (chart axes, lines and values; what an icon depicts).\n` : ""}`;
+  const tail = `${docsBlock}${historyBlock}
+Question: "${question}"
+
+Answer in at most 3 short sentences (60 words), specific to this element: use its state, values${image ? " and what the screenshot shows" : ""}. If it's a setting, say what changing it would do. Text in [brackets] was redacted: refer to it generically ("your project"). Plain text only. If something isn't visible or documented, say so briefly instead of guessing.`;
+
+  const run = async (mode, prompt, withImage) => {
+    const model = getGenerativeModel(
+      ai,
+      {
+        mode,
+        inCloudParams: { model: CLOUD_MODEL, generationConfig: { temperature: 0.2 } },
+        onDeviceParams: {
+          createOptions: {
+            expectedInputs: [{ type: "text", languages: ["en"] }, ...(withImage ? [{ type: "image" }] : [])],
+            expectedOutputs: [{ type: "text", languages: ["en"] }],
+          },
+        },
+      },
+      { timeout: 45_000 }
+    );
+    const parts = withImage ? [{ text: prompt }, { inlineData: { mimeType: image.mime, data: image.base64 } }] : prompt;
+    const t0 = performance.now();
+    const res = await model.generateContentStream(parts);
+    let text = "";
+    let source = null;
+    for await (const chunk of res.stream) {
+      source = source || chunk.inferenceSource;
+      text += chunk.text();
+      onText?.(unplaceholder(text));
+    }
+    return {
+      text: unplaceholder(text).trim(),
+      source: source || (mode === InferenceMode.ONLY_ON_DEVICE ? "on_device" : "in_cloud"),
+      ms: Math.round(performance.now() - t0),
+      sent: prompt + (withImage ? `\n[+ screenshot of the element, ${image.w}×${image.h}, stayed on this device]` : ""),
+      usedImage: withImage,
+    };
+  };
+
+  try {
+    return await run(InferenceMode.ONLY_ON_DEVICE, local + tail, !!image);
+  } catch (e) {
+    if (image) {
+      // Nano is here but can't take images (e.g. multimodal not enabled): still answer on-device from text.
+      try {
+        return await run(InferenceMode.ONLY_ON_DEVICE, local + tail, false);
+      } catch {}
+    }
+    console.warn("[Waypoint] on-device answer unavailable, using cloud with less context:", e?.message);
+    return await run(InferenceMode.ONLY_IN_CLOUD, head + tail, false);
+  }
+}

@@ -1,6 +1,6 @@
 import "./sidepanel.css";
 import { docLookup, clearDocsCache } from "./docs.js";
-import { pickElement, planRoute, hasKeywordHit, exactMatch, closeMatch, kindFits, alreadyHere, looksDone, specificToGoal, namesNavTarget, navTarget, looksLikeExplain, pickTour, explainControl, chooseMode, readDocs, suggestDocs } from "./pipeline.js";
+import { pickElement, planRoute, hasKeywordHit, exactMatch, closeMatch, kindFits, alreadyHere, looksDone, specificToGoal, namesNavTarget, navTarget, looksLikeExplain, pickTour, explainControl, chooseMode, readDocs, suggestDocs, answerAboutElement } from "./pipeline.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -809,6 +809,242 @@ function finishTour() {
   status("Tour complete.");
 }
 
+// ---------- Element picker ----------
+// Pick button (or Alt+Shift+P, or right-click "Ask Waypoint about this") → the page highlights what's under
+// the cursor → click pins it → the card here shows it with suggested questions → answers stream onto it.
+// Charts, images and icon-only controls also get a screenshot of just that element, read by Nano on-device.
+
+const pick = { desc: null, tabId: null, thread: [] };
+
+const SUGGEST = {
+  Chart: ["What does this chart show?", "Anything unusual here?", "How do I read this?"],
+  Image: ["What is this?", "Why is it here?"],
+  Icon: ["What does this icon mean?", "What happens if I click it?"],
+  "Icon button": ["What does this button do?", "Is it safe to click?"],
+  Switch: ["What does this setting do?", "Is it safe to change?", "What should it be set to?"],
+  Checkbox: ["What does this option do?", "Is it safe to change?"],
+  Setting: ["What does this setting do?", "What should I set it to?", "Is it safe to change?"],
+  Field: ["What goes in here?", "What's a good value?"],
+  Dropdown: ["What do these options mean?", "Which should I pick?"],
+  Row: ["What do these values mean?", "Is anything wrong here?", "How do I change this?"],
+  Table: ["Summarize this table", "Anything I should look at?"],
+  Button: ["What does this do?", "Is it reversible?"],
+  Link: ["Where does this go?", "What's it for?"],
+  Tab: ["What's on this tab?"],
+  Menu: ["What's in this menu?"],
+  Section: ["Summarize this section", "What should I pay attention to?"],
+  Card: ["Summarize this", "What should I do here?"],
+  Heading: ["What is this section about?"],
+};
+function suggestionsFor(d) {
+  const base = SUGGEST[d.kind] || ["What is this?", "What does it do?"];
+  return /disabled/.test(d.state) ? ["Why is this disabled?", ...base].slice(0, 3) : base;
+}
+
+// Screenshots need the "all URLs" grant (or activeTab, which only right-click / the shortcut give).
+const SCREENSHOT_ORIGINS = ["<all_urls>"];
+const canScreenshot = () => chrome.permissions.contains({ origins: SCREENSHOT_ORIGINS }).catch(() => false);
+let pendingRetry = null;
+
+function renderPickCard() {
+  const d = pick.desc;
+  $("pick-card").hidden = !d;
+  if (!d) return;
+  $("pc-allow").hidden = true;
+  if (d.vision && !pick.activeTab) canScreenshot().then((ok) => ($("pc-allow").hidden = ok || !pick.desc));
+  $("pc-kind").textContent = d.kind;
+  $("pc-name").textContent = d.name;
+  $("pc-sub").textContent = [d.state && d.state.replace(/,/g, " · "), d.context && d.context.replace(/^row cells: /, "")].filter(Boolean).join(" — ");
+  $("pc-vision").hidden = !d.vision;
+  const box = $("pc-suggest");
+  box.innerHTML = "";
+  for (const q of suggestionsFor(d)) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = q;
+    b.addEventListener("click", () => {
+      $("q").value = q;
+      $("ask-form").requestSubmit();
+    });
+    box.appendChild(b);
+  }
+}
+function setPicking(on) {
+  $("pick").setAttribute("aria-pressed", String(on));
+}
+function setPicked(desc, tabId) {
+  Object.assign(pick, { desc, tabId, thread: [] });
+  setPicking(false);
+  renderPickCard();
+  if (desc) {
+    log({ kind: "info", title: `Picked: ${desc.kind} "${desc.name}"`, detail: desc.vision ? `Looks like ${desc.vision === "icon" ? "an icon" : `a ${desc.vision}`}: Nano will also look at a screenshot of it.` : "Its text, state and surroundings are the context." });
+    status("Ask anything about it.");
+    $("q").focus();
+  }
+}
+function clearPicked(tellPage = true) {
+  if (tellPage && pick.tabId != null) send(pick.tabId, { type: "pick-clear" }).catch(() => {});
+  Object.assign(pick, { desc: null, tabId: null, thread: [] });
+  renderPickCard();
+}
+
+async function startPick() {
+  const tabId = await pageTab();
+  if (!tabId) {
+    $("status").textContent = site.web ? `Waypoint is off for ${site.host}. Turn it on above, then pick.` : "Open the page you want to ask about first.";
+    return;
+  }
+  // Whatever was running stops; picking takes over the page.
+  state.gen++;
+  clearTimeout(stepTimer);
+  Object.assign(state, { tabId, mode: "idle", tour: null, single: null });
+  setPaused(false);
+  renderSteps();
+  await ensureFresh(tabId);
+  await send(tabId, { type: "pick-start" });
+  pick.tabId = tabId;
+  setPicking(true);
+  $("status").textContent = "Hover over the page and click what you want to ask about. ↑ ↓ widen or narrow, Esc cancels.";
+}
+$("pick").addEventListener("click", () => ($("pick").getAttribute("aria-pressed") === "true" ? send(pick.tabId, { type: "pick-stop" }).then(() => setPicking(false)) : startPick()));
+$("pc-clear").addEventListener("click", () => clearPicked(true));
+$("pc-allow-btn").addEventListener("click", () => {
+  // Straight from the click (user gesture); then re-ask what was asked without the screenshot.
+  chrome.permissions.request({ origins: SCREENSHOT_ORIGINS }).then((ok) => {
+    if (!ok) return;
+    $("pc-allow").hidden = true;
+    if (pendingRetry && pick.desc) {
+      const q = pendingRetry;
+      pendingRetry = null;
+      answerPick(q);
+    }
+  });
+});
+document.addEventListener("keydown", (e) => {
+  if (e.altKey && e.shiftKey && e.code === "KeyP") {
+    e.preventDefault();
+    startPick();
+  }
+});
+
+/** Screenshot of just the picked element (Waypoint's overlay hidden), downscaled; stays on this device. */
+async function captureCrop(tabId) {
+  const r = await send(tabId, { type: "pick-rect" });
+  if (!r) throw new Error("The element is gone");
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    const dataUrl = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "png" });
+    const bmp = await createImageBitmap(await (await fetch(dataUrl)).blob());
+    const k = bmp.width / r.vw; // device pixels per CSS pixel
+    const pad = 8;
+    const x = Math.max(0, (r.left - pad) * k), y = Math.max(0, (r.top - pad) * k);
+    const w = Math.min(bmp.width - x, (r.width + pad * 2) * k), h = Math.min(bmp.height - y, (r.height + pad * 2) * k);
+    if (w < 8 || h < 8) throw new Error("The element isn't on screen");
+    const scale = Math.min(1, 768 / Math.max(w, h));
+    const c = new OffscreenCanvas(Math.round(w * scale), Math.round(h * scale));
+    c.getContext("2d").drawImage(bmp, x, y, w, h, 0, 0, c.width, c.height);
+    const blob = await c.convertToBlob({ type: "image/png" });
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    let bin = "";
+    for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+    return { base64: btoa(bin), mime: "image/png", w: c.width, h: c.height };
+  } finally {
+    await send(tabId, { type: "pick-restore" }).catch(() => {});
+  }
+}
+
+/** A question about the picked element: route it (explain here, or guide from it), then answer. */
+async function handlePick(question) {
+  const d = pick.desc;
+  const tabId = pick.tabId;
+  let mode = "explain";
+  try {
+    mode = (await chooseMode({ question, title: d.pageTitle })).mode;
+  } catch {}
+  if (mode === "guide") {
+    // "Turn this on", "where else is this set": a guide that starts from the picked element.
+    return ask(`${question} (they mean the ${d.kind.toLowerCase()} "${d.name}" on this page)`, tabId);
+  }
+  return answerPick(question);
+}
+
+async function answerPick(question) {
+  const gen = ++state.gen;
+  clearTimeout(stepTimer);
+  Object.assign(state, { mode: "pick", tour: null, single: null });
+  setPaused(false);
+  renderSteps();
+  const d = pick.desc;
+  const tabId = pick.tabId;
+  state.tabId = tabId;
+  const loadingText = d.vision ? "Gemini Nano is looking at it, on your device…" : nanoReady ? "Gemini Nano is thinking, on your device…" : "Thinking…";
+  const shown = await send(tabId, { type: "pick-show", step: d.kind, title: d.name, text: "", loading: true, loadingText });
+  if (!shown?.ok) {
+    clearPicked(false);
+    status("That element isn't on the page any more. Pick it again.");
+    return;
+  }
+  status(`Answering about "${d.name}"…`);
+  try {
+    const docsP = lookupDocs({ question: `${question} ${d.name}`, tabId, outline: { title: d.pageTitle }, labels: [d.name], nearLinks: d.docHref ? [d.docHref] : [] });
+    let image = null;
+    if (d.vision) {
+      try {
+        image = await captureCrop(tabId);
+      } catch (e) {
+        const perm = /permission/i.test(String(e?.message));
+        log({ kind: "info", title: "Couldn't take a screenshot of it", detail: perm ? "Screenshots aren't allowed yet; answering from its text. Allow them in the card to let Nano look." : `${e?.message || e}. Answering from its text instead.` });
+        if (perm) {
+          $("pc-allow").hidden = false;
+          pendingRetry = question;
+        }
+      }
+    }
+    const docs = await withTimeout(docsP, 4000);
+    if (gen !== state.gen) return;
+    const docsText = docsTextFor(docs, `${d.name} ${question}`, 1000, d.name);
+    const docUrl = docsText ? docs.urlFor(d.name) : null;
+    let last = 0;
+    const r = await answerAboutElement({
+      question,
+      el: d,
+      history: pick.thread,
+      docs: docsText,
+      image,
+      onText: (t) => {
+        if (gen !== state.gen || performance.now() - last < 60) return;
+        last = performance.now();
+        send(tabId, { type: "update", text: t, loading: false, streaming: true }).catch(() => {});
+      },
+    });
+    if (gen !== state.gen) return;
+    await send(tabId, { type: "update", text: r.text, loading: false, streaming: false, src: SOURCE_LABEL[r.source], docUrl });
+    pick.thread = [...pick.thread, { q: question, a: r.text }].slice(-3);
+    log({
+      kind: r.source === "in_cloud" ? "in_cloud" : "on_device",
+      title: `About "${d.name}"${r.usedImage ? " (looked at it)" : ""}`,
+      detail: `${SOURCE_LABEL[r.source] || r.source}${docsText ? " · grounded in the docs" : ""}${r.usedImage ? " · screenshot stayed on this device" : ""}`,
+      sent: r.sent,
+      ms: r.ms,
+    });
+    status("Ask a follow-up, or pick something else.");
+    $("q").value = "";
+  } catch (e) {
+    console.error(e);
+    send(tabId, { type: "update", text: `Couldn't answer: ${e?.message || e}`, loading: false, streaming: false }).catch(() => {});
+    status(`Error: ${e?.message || e}`);
+  }
+}
+
+// Right-click "Ask Waypoint about this" opened the panel before it could listen: pick up what was chosen.
+(async () => {
+  try {
+    const { pendingPick } = await chrome.storage.session.get("pendingPick");
+    if (pendingPick && Date.now() - pendingPick.at < 15000) setPicked(pendingPick.desc, pendingPick.tabId);
+    await chrome.storage.session.remove("pendingPick");
+  } catch {}
+})();
+
 // ---------- Pause / resume ----------
 // × on the bubble pauses instead of ending: the route and progress are kept, and Resume (in the page
 // chip or here) picks up from whatever page the user is on now.
@@ -942,7 +1178,8 @@ $("ask-form").addEventListener("submit", async (e) => {
       : "Open the page you need help with first.";
     return;
   }
-  handle(q, tabId);
+  if (pick.desc && pick.tabId === tabId) handlePick(q);
+  else handle(q, tabId);
 });
 
 $("replan").addEventListener("click", async () => {
@@ -975,6 +1212,12 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
     })();
     return;
   }
+  // Test hooks for the picker: window.postMessage({ __waypoint: "pick" }) / ({ __waypoint: "pick-ask", q }).
+  if (msg.type === "page-command" && msg.command === "pick") return void startPick();
+  if (msg.type === "page-command" && msg.command === "pick-ask" && msg.q && pick.desc) {
+    $("q").value = msg.q;
+    return void handlePick(msg.q);
+  }
   if (msg.type === "page-command" && msg.command === "ask" && msg.q) {
     // Stale content-script copies forward the same command too; take the first.
     const key = `${fromTab}|${msg.q}`;
@@ -989,6 +1232,13 @@ chrome.runtime.onMessage.addListener((msg, sender) => {
       $("q").value = msg.q;
       handle(msg.q, fromTab);
     });
+    return;
+  }
+  if (msg.type === "picked" && fromTab != null) return setPicked(msg.desc, fromTab);
+  if (msg.type === "pick-cleared" && fromTab === pick.tabId) return clearPicked(false);
+  if (msg.type === "pick-cancelled" && fromTab === pick.tabId) {
+    setPicking(false);
+    status("Picking cancelled.");
     return;
   }
   if (fromTab !== state.tabId) return;

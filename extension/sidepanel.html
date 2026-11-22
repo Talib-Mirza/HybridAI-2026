@@ -25,9 +25,32 @@
     </section>
 
     <form id="ask-form">
+      <div id="pick-card" class="pick-card" hidden>
+        <div class="pc-head">
+          <span id="pc-kind" class="pc-kind"></span>
+          <span id="pc-name" class="pc-name"></span>
+          <button type="button" id="pc-clear" class="pc-x" title="Clear the selected element" aria-label="Clear the selected element">×</button>
+        </div>
+        <div id="pc-sub" class="pc-sub"></div>
+        <div id="pc-vision" class="pc-vision" hidden>
+          <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+          <span>Gemini Nano will look at it, on this device</span>
+        </div>
+        <div id="pc-allow" class="pc-allow" hidden>
+          <span>To read it, Nano needs a screenshot of just this element (it stays on your device).</span>
+          <button type="button" id="pc-allow-btn" class="secondary">Allow screenshots</button>
+        </div>
+        <div id="pc-suggest" class="pc-suggest"></div>
+      </div>
       <textarea id="q" rows="3" placeholder="Ask to get something done (“Create a service account key”) or to understand the page (“What do these settings do?”)"></textarea>
       <div class="row">
-        <button type="submit" id="ask">Ask</button>
+        <div class="row-left">
+          <button type="submit" id="ask">Ask</button>
+          <button type="button" id="pick" class="secondary pick-btn" aria-pressed="false" title="Pick something on the page to ask about (Alt+Shift+P)">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="7"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/><circle cx="12" cy="12" r="1.5" fill="currentColor"/></svg>
+            <span>Pick</span>
+          </button>
+        </div>
         <label class="toggle"><input type="checkbox" id="force-cloud" /> Cloud only</label>
       </div>
     </form>

@@ -498,9 +498,24 @@
       .pill.done .dot{display:block;background:#3ccf8e;animation:none}
       @keyframes in{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
       @keyframes pulse{0%,100%{opacity:.35}50%{opacity:1}}
-      @media (prefers-reduced-motion:reduce){.ring,.bubble,.pill,.pill .dot,.scroll-icon,.spinner,.bubble.streaming .text::after{transition:none;animation:none}}
+      .ring.pick{border-color:#22c39a;box-shadow:0 0 0 9999px rgba(10,16,34,.18),0 0 0 4px rgba(34,195,154,.3)}
+      .bubble.nonav .nav{display:none}
+      .pick{position:fixed;display:none;border:2px solid #22c39a;background:rgba(34,195,154,.12);border-radius:6px;box-shadow:0 0 0 1px rgba(0,0,0,.25);transition:left .1s ease,top .1s ease,width .1s ease,height .1s ease;pointer-events:none}
+      .pick.pinned{background:rgba(34,195,154,.05);box-shadow:0 0 0 4px rgba(34,195,154,.25)}
+      .pick-tag{position:fixed;display:none;align-items:center;gap:6px;max-width:360px;background:#0f2a24;color:#e3fff6;font:600 11.5px/1.25 system-ui,-apple-system,sans-serif;padding:4px 6px 4px 8px;border-radius:6px;box-shadow:0 4px 14px rgba(0,0,0,.3);pointer-events:none;white-space:nowrap}
+      .pick-tag .kind{color:#7ff0cc;text-transform:uppercase;font-size:10px;letter-spacing:.05em;flex:none}
+      .pick-tag .name{overflow:hidden;text-overflow:ellipsis}
+      .pick-tag .eye{flex:none;color:#ffd78a;font-size:11px}
+      .pick-tag .unpin{display:none;flex:none;background:none;border:0;color:#9ff0d6;cursor:pointer;font:14px/1 system-ui;padding:0 2px;border-radius:4px}
+      .pick-tag.pinned{pointer-events:auto}
+      .pick-tag.pinned .unpin{display:inline}
+      .pick-tag .unpin:hover,.pick-tag .unpin:focus-visible{background:rgba(127,240,204,.15);outline:none}
+      .pill.pick .dot{display:block;background:#22c39a;animation:none}
+      @media (prefers-reduced-motion:reduce){.ring,.bubble,.pill,.pill .dot,.scroll-icon,.spinner,.bubble.streaming .text::after,.pick{transition:none;animation:none}}
     </style>
     <div class="ring"></div>
+    <div class="pick"></div>
+    <div class="pick-tag" role="status" aria-live="polite"><span class="kind"></span><span class="name"></span><span class="eye" hidden title="Gemini Nano will look at it">👁</span><button class="unpin" title="Clear selection" aria-label="Clear selection">×</button></div>
     <div class="bubble" role="dialog" aria-label="Waypoint guide">
       <button class="x" title="Pause the guide" aria-label="Pause the guide">×</button>
       <div class="step"></div><div class="title"></div><div class="text"></div>
@@ -546,7 +561,8 @@
       host.showPopover();
     } catch {}
   }
-  const anyVisible = () => ring.style.display === "block" || pillEl.style.display === "flex";
+  const anyVisible = () =>
+    ring.style.display === "block" || pillEl.style.display === "flex" || shadow.querySelector(".pick").style.display === "block";
   function lower() {
     if (anyVisible()) return;
     try { host.hidePopover(); } catch {}
@@ -589,6 +605,10 @@
 
   // × pauses rather than ends: the guide can be resumed from the chip or the side panel.
   $s(".x").addEventListener("click", () => {
+    if (bubbleMode === "pick") {
+      hide();
+      return;
+    }
     const wasExplain = bubbleMode === "explain";
     hide();
     pill("paused", wasExplain ? "Tour paused" : "Guide paused");
@@ -777,10 +797,13 @@
     target = el;
     lostSince = 0;
     covered = false;
-    bubbleMode = mode === "explain" ? "explain" : "guide";
+    bubbleMode = mode === "explain" ? "explain" : mode === "pick" ? "pick" : "guide";
     pill(null);
     raise();
-    bubble.classList.toggle("explain", bubbleMode === "explain");
+    bubble.classList.toggle("explain", bubbleMode !== "guide");
+    bubble.classList.toggle("nonav", bubbleMode === "pick");
+    ring.classList.toggle("pick", bubbleMode === "pick");
+    if (bubbleMode === "pick") hidePickBox(); // the ring takes over while the answer shows
     $s(".step").textContent = step || "";
     $s(".title").textContent = title || "";
     $s(".why").textContent = why || "";
@@ -813,10 +836,12 @@
   }
 
   function hide() {
+    const wasPick = bubbleMode === "pick";
     target = null;
     cancelAnimationFrame(raf);
     ring.style.display = "none";
     bubble.style.display = "none";
+    if (wasPick && pinned) drawPin(); // back to the pinned outline
     lower();
   }
 
@@ -851,6 +876,282 @@
     if (e.source !== window || !e.data || !e.data.__waypoint) return;
     safeSend({ type: "page-command", command: e.data.__waypoint, q: e.data.q });
   });
+
+  // ---------- Element picker ----------
+  // Like devtools' inspector, but it snaps to what a person means (a control, a field with its label, a
+  // row, a card, a chart) and names it in plain words. Clicking pins it as context for questions.
+  const PICK_BLOCKS =
+    "label,fieldset,[role=group],[role=region],[role=img],[role=figure],figure,img,svg,canvas,table,section,article,mat-card,.mat-mdc-card,li,dl,h1,h2,h3,h4,p,mat-form-field,.mat-mdc-form-field,[class*=chart],[class*=Chart]";
+  const pickBox = shadow.querySelector(".pick");
+  const pickTag = shadow.querySelector(".pick-tag");
+  let picking = false;
+  let hoverChain = [];
+  let hoverLevel = 0;
+  let pinned = null;
+  let lastContextTarget = null;
+  let cursorStyle = null;
+  let pickLoop = 0;
+
+  const inHost = (e) => e.composedPath().includes(host);
+
+  /** From the element under the cursor outward: the things a person could mean, smallest first. */
+  function meaningfulChain(start) {
+    const chain = [];
+    for (let n = start, k = 0; n && n !== document.body && n !== document.documentElement && k < 30; n = parentOf(n), k++) {
+      if (n.nodeType !== 1 || n === host || !n.matches) continue;
+      if (!n.matches(INTERACTIVE) && !n.matches(PICK_BLOCKS)) continue;
+      const r = n.getBoundingClientRect();
+      if (r.width < 8 || r.height < 8 || r.width * r.height > innerWidth * innerHeight * 0.85) continue;
+      if (!isVisible(n) && !hoverOf.has(n)) continue;
+      const prev = chain[chain.length - 1];
+      if (prev) {
+        const pr = prev.getBoundingClientRect();
+        // A wrapper exactly around the previous one adds nothing.
+        if (Math.abs(pr.left - r.left) < 2 && Math.abs(pr.top - r.top) < 2 && Math.abs(pr.width - r.width) < 2 && Math.abs(pr.height - r.height) < 2) continue;
+      }
+      chain.push(n);
+    }
+    return chain;
+  }
+  /** Where to start in the chain: an icon or graphic inside a control means the control. */
+  function baseLevel(chain) {
+    const ctl = chain.findIndex((n) => n.matches(INTERACTIVE));
+    if (ctl > 0 && ctl <= 3 && chain.slice(0, ctl).every((n) => n.matches("svg,img,canvas,[role=img],p,label,li") && n.getBoundingClientRect().width < 64)) return ctl;
+    return 0;
+  }
+
+  function visionNeed(el) {
+    const has = (sel) => el.matches(sel) || !!el.querySelector?.(sel);
+    if (has("canvas")) return "chart";
+    const svgs = [el.matches("svg") ? el : null, ...(el.querySelectorAll?.("svg") || [])].filter(Boolean);
+    if (svgs.some((sv) => { const b = sv.getBoundingClientRect(); return b.width > 90 && b.height > 45; })) return "chart";
+    if (/chart|graph|sparkline|plot/i.test(`${el.className?.baseVal ?? el.className} ${el.getAttribute("aria-label") || ""}`)) return "chart";
+    const imgs = [el.matches("img") ? el : null, ...(el.querySelectorAll?.("img") || [])].filter(Boolean);
+    if (imgs.some((im) => { const b = im.getBoundingClientRect(); return b.width > 64 && b.height > 48; })) return "image";
+    // Icon-only: no words, just an icon.
+    if (textOf(el).replace(/\W/g, "").length < 2 && (has(ICON) || has("svg") || has("img"))) return "icon";
+    return null;
+  }
+
+  const KIND = {
+    button: "Button", link: "Link", switch: "Switch", checkbox: "Checkbox", radio: "Option", textbox: "Field", searchbox: "Field",
+    combobox: "Dropdown", select: "Dropdown", tab: "Tab", "menu-toggle": "Menu", menuitem: "Menu item", menuitemcheckbox: "Menu item",
+    menuitemradio: "Menu item", row: "Row", treeitem: "Item", option: "Option", summary: "Toggle",
+  };
+  function pickKind(el, vision) {
+    const tag = el.tagName.toLowerCase();
+    const role = el.getAttribute("role") || "";
+    const cls = String(el.className?.baseVal ?? el.className ?? "");
+    if (vision === "chart") return "Chart";
+    if (vision === "image") return "Image";
+    if (vision === "icon") return el.matches(INTERACTIVE) ? "Icon button" : "Icon";
+    if (el.matches(ROW)) return "Row";
+    if (tag === "table") return "Table";
+    if (/^h[1-6]$/.test(tag) || role === "heading") return "Heading";
+    if (tag === "label" || tag === "fieldset" || tag === "mat-form-field" || /form-field/.test(cls) || role === "group") return "Setting";
+    if (el.matches(INTERACTIVE)) return KIND[roleOf(el)] || "Control";
+    if (tag === "section" || tag === "article" || role === "region") return "Section";
+    if (/card/i.test(tag + " " + cls)) return "Card";
+    if (tag === "p") return "Text";
+    if (tag === "li" || tag === "dl") return "Item";
+    return "Element";
+  }
+  function pickName(el, kind) {
+    if (kind === "Chart" || kind === "Image") {
+      // Charts' aria-labels are often long descriptions; their heading is the name people use.
+      const under = (contextOf(el).match(/under "([^"]+)"/) || [])[1];
+      // Only a heading people can see (charts often carry a visually hidden one like "Graphs").
+      const h = [...(el.querySelectorAll?.("h1,h2,h3,h4,[role=heading]") || [])].find((x) => isVisible(x) && textOf(x));
+      if (h) return textOf(h).slice(0, 60);
+      if (under) return under.slice(0, 60);
+    }
+    if (el.matches(INTERACTIVE) || el.matches(ROW)) {
+      const l = labelOf(el);
+      if (l) return l.slice(0, 80);
+    }
+    const aria = el.getAttribute("aria-label") || el.getAttribute("alt") || el.getAttribute("title");
+    if (aria) return clean(aria).slice(0, 80);
+    const h = el.querySelector?.("h1,h2,h3,h4,h5,[role=heading],legend,mat-card-title,label");
+    if (h && textOf(h)) return textOf(h).slice(0, 80);
+    const t = textOf(el);
+    if (t) return t.slice(0, 60) + (t.length > 60 ? "…" : "");
+    const under = (contextOf(el).match(/under "([^"]+)"/) || [])[1];
+    return under ? `${kind} in "${under}"` : kind;
+  }
+
+  /** A table row as "Column: value" pairs, so numbers mean something ("Verified requests: 100%"). */
+  function rowFields(row) {
+    const table = row.closest("table,[role=table],[role=grid],[role=treegrid],mat-table,.mat-mdc-table");
+    if (!table) return "";
+    const heads = [...table.querySelectorAll("thead th, [role=columnheader], mat-header-cell, .mat-mdc-header-cell")].map((h) => textOf(h));
+    const cells = [...row.querySelectorAll(CELL)].map((c) => textOf(c));
+    if (!heads.length || !cells.length) return "";
+    // Checkbox/select columns can make the counts differ: line them up from the right.
+    const off = heads.length - cells.length;
+    return cells
+      .map((v, i) => {
+        const h = heads[i + off] || "";
+        return v ? (h ? `${h}: ${v}` : v) : "";
+      })
+      .filter(Boolean)
+      .join(" · ");
+  }
+
+  /** Everything Nano gets about a picked element (redacted). */
+  function describePick(el) {
+    const vision = visionNeed(el);
+    const kind = pickKind(el, vision);
+    const d = describeEl(el);
+    const text = textOf(el);
+    return {
+      kind,
+      name: redact(pickName(el, kind)),
+      role: roleOf(el),
+      state: stateOf(el),
+      context: redact(contextOf(el)),
+      text: redact(text).slice(0, 1400),
+      fields: el.matches(ROW) ? redact(rowFields(el)).slice(0, 600) : "",
+      hint: d.hint,
+      nearby: text.length > 60 ? "" : d.nearby,
+      docHref: d.docHref,
+      vision,
+      pageTitle: redact(document.title),
+      path: pagePath(),
+    };
+  }
+
+  function placeTag(r, pinnedMode) {
+    const th = 22, m = 6;
+    let top = r.top - th - 6;
+    if (top < m) top = Math.min(r.bottom + 6, innerHeight - th - m);
+    pickTag.style.left = `${Math.min(Math.max(m, r.left), innerWidth - Math.min(360, pickTag.offsetWidth || 200) - m)}px`;
+    pickTag.style.top = `${top}px`;
+    pickTag.classList.toggle("pinned", pinnedMode);
+  }
+  function drawBox(el, pinnedMode) {
+    const r = el.getBoundingClientRect();
+    Object.assign(pickBox.style, { display: "block", left: `${r.left - 2}px`, top: `${r.top - 2}px`, width: `${r.width + 4}px`, height: `${r.height + 4}px` });
+    pickBox.classList.toggle("pinned", pinnedMode);
+    pickTag.style.display = "flex";
+    placeTag(r, pinnedMode);
+  }
+  function labelTag(el) {
+    const vision = visionNeed(el);
+    const kind = pickKind(el, vision);
+    pickTag.querySelector(".kind").textContent = kind;
+    pickTag.querySelector(".name").textContent = kind === pickName(el, kind) ? "" : pickName(el, kind);
+    pickTag.querySelector(".eye").hidden = !vision;
+  }
+  function hidePickBox() {
+    pickBox.style.display = "none";
+    pickTag.style.display = "none";
+  }
+  function drawPin() {
+    if (!pinned || !pinned.isConnected) return;
+    raise();
+    labelTag(pinned);
+    drawBox(pinned, true);
+  }
+  // Follow scrolling / layout while hovering or pinned (cheap: one rect per frame).
+  function loop() {
+    pickLoop = requestAnimationFrame(loop);
+    if (picking && hoverChain.length) drawBox(hoverChain[hoverLevel], false);
+    else if (pinned && !(bubbleMode === "pick" && ring.style.display === "block")) {
+      if (!pinned.isConnected) return clearPin(true);
+      drawBox(pinned, true);
+    }
+  }
+
+  function startPicking() {
+    clearPin(false);
+    hide();
+    picking = true;
+    hoverChain = [];
+    hoverLevel = 0;
+    cursorStyle = document.createElement("style");
+    cursorStyle.textContent = "*{cursor:crosshair !important}";
+    (document.head || document.documentElement).appendChild(cursorStyle);
+    pill("pick", "Click anything to ask about it · ↑ ↓ to widen · Esc to cancel");
+    cancelAnimationFrame(pickLoop);
+    loop();
+  }
+  function stopPicking() {
+    picking = false;
+    cursorStyle?.remove();
+    cursorStyle = null;
+    pill(null);
+    if (!pinned) hidePickBox();
+  }
+  function select(el) {
+    stopPicking();
+    pinned = el;
+    labelTag(el);
+    drawPin();
+    cancelAnimationFrame(pickLoop);
+    loop();
+    const desc = describePick(el);
+    safeSend({ type: "picked", desc });
+    return desc;
+  }
+  function clearPin(notify) {
+    pinned = null;
+    hidePickBox();
+    if (bubbleMode === "pick") hide();
+    cancelAnimationFrame(pickLoop);
+    lower();
+    if (notify) safeSend({ type: "pick-cleared" });
+  }
+  pickTag.querySelector(".unpin").addEventListener("click", () => clearPin(true));
+
+  function hoverAt(node) {
+    const chain = meaningfulChain(node);
+    if (!chain.length) return;
+    if (chain[0] !== hoverChain[0]) {
+      hoverChain = chain;
+      hoverLevel = baseLevel(chain);
+      labelTag(hoverChain[hoverLevel]);
+    }
+  }
+  window.addEventListener(
+    "pointermove",
+    (e) => {
+      if (!picking || inHost(e)) return;
+      hoverAt(e.composedPath()[0]);
+    },
+    true
+  );
+  // While picking, the page must not react to clicks (consoles are full of Delete buttons).
+  for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click", "dblclick", "auxclick", "contextmenu", "touchstart", "touchend"]) {
+    window.addEventListener(
+      type,
+      (e) => {
+        if (!picking || inHost(e)) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        if (type === "click") {
+          hoverAt(e.composedPath()[0]);
+          if (hoverChain.length) select(hoverChain[hoverLevel]);
+        }
+      },
+      true
+    );
+  }
+  window.addEventListener(
+    "keydown",
+    (e) => {
+      if (!picking) return;
+      if (e.key === "Escape") stopPicking(), safeSend({ type: "pick-cancelled" });
+      else if (e.key === "ArrowUp" && hoverChain.length) hoverLevel = Math.min(hoverLevel + 1, hoverChain.length - 1), labelTag(hoverChain[hoverLevel]);
+      else if (e.key === "ArrowDown" && hoverChain.length) hoverLevel = Math.max(hoverLevel - 1, 0), labelTag(hoverChain[hoverLevel]);
+      else if (e.key === "Enter" && hoverChain.length) select(hoverChain[hoverLevel]);
+      else return;
+      e.preventDefault();
+      e.stopImmediatePropagation();
+    },
+    true
+  );
+  // Right-click "Ask Waypoint about this": remember what was right-clicked.
+  window.addEventListener("contextmenu", (e) => { if (!picking) lastContextTarget = e.composedPath()[0]; }, true);
 
   // ---------- Messages from the side panel ----------
 
@@ -893,6 +1194,53 @@
         break;
       case "update":
         update(msg);
+        reply({ ok: true });
+        break;
+      case "pick-start":
+        startPicking();
+        reply({ ok: true });
+        break;
+      case "pick-stop":
+        if (picking) stopPicking();
+        reply({ ok: true });
+        break;
+      case "pick-clear":
+        clearPin(false);
+        reply({ ok: true });
+        break;
+      case "pick-from-context": {
+        const chain = lastContextTarget ? meaningfulChain(lastContextTarget) : [];
+        reply(chain.length ? select(chain[baseLevel(chain)]) : null);
+        break;
+      }
+      case "pick-show":
+        if (pinned && pinned.isConnected) {
+          show(pinned, { ...msg, mode: "pick" });
+          reply({ ok: true });
+        } else reply({ ok: false });
+        break;
+      case "pick-rect": {
+        // For the screenshot: bring it into view, hide Waypoint's own overlay, then report where it is.
+        if (!pinned || !pinned.isConnected) {
+          reply(null);
+          break;
+        }
+        const r0 = pinned.getBoundingClientRect();
+        const offscreen = r0.top < 0 || r0.bottom > innerHeight || r0.left < 0 || r0.right > innerWidth;
+        if (offscreen) pinned.scrollIntoView({ block: "center", inline: "nearest" });
+        host.style.visibility = "hidden";
+        requestAnimationFrame(() =>
+          requestAnimationFrame(() =>
+            setTimeout(() => {
+              const r = pinned.getBoundingClientRect();
+              reply({ left: r.left, top: r.top, width: r.width, height: r.height, vw: innerWidth, vh: innerHeight });
+            }, offscreen ? 250 : 30)
+          )
+        );
+        return true; // async reply
+      }
+      case "pick-restore":
+        host.style.visibility = "";
         reply({ ok: true });
         break;
       case "pill":

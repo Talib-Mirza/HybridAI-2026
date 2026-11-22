@@ -8,14 +8,17 @@
     "sidePanel",
     "scripting",
     "tabs",
-    "storage"
+    "storage",
+    "contextMenus",
+    "activeTab"
   ],
   "host_permissions": [
     "https://console.firebase.google.com/*"
   ],
   "optional_host_permissions": [
     "https://*/*",
-    "http://*/*"
+    "http://*/*",
+    "<all_urls>"
   ],
   "background": {
     "service_worker": "background.js"
@@ -25,6 +28,14 @@
   },
   "side_panel": {
     "default_path": "sidepanel.html"
+  },
+  "commands": {
+    "start-pick": {
+      "suggested_key": {
+        "default": "Alt+Shift+P"
+      },
+      "description": "Pick something on the page to ask Waypoint about"
+    }
   },
   "content_scripts": [
     {
