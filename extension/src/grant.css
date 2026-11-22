@@ -1,0 +1,8 @@
+.grant { padding: 26px 28px; display: grid; gap: 12px; }
+.grant .wordmark { font-size: 18px; color: var(--muted); }
+.grant h1 { font: 700 26px/1.1 var(--font-display); letter-spacing: .02em; margin: 4px 0 0; }
+.why { margin: 0; color: var(--text); }
+.sites { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+.sites li { font: 500 13px var(--font-mono); background: var(--surface); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+.actions { display: flex; gap: 10px; margin-top: 6px; }
+.fine { margin: 0; color: var(--muted); font-size: 12px; }

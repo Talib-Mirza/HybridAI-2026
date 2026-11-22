@@ -82,7 +82,7 @@
   function deepQueryAll(root, sel, out = []) {
     root.querySelectorAll(sel).forEach((e) => out.push(e));
     root.querySelectorAll("*").forEach((el) => {
-      if (el.shadowRoot) deepQueryAll(el.shadowRoot, sel, out);
+      if (el.shadowRoot && el.id !== "waypoint-host") deepQueryAll(el.shadowRoot, sel, out);
       if (el.tagName === "IFRAME") {
         try {
           if (el.contentDocument) deepQueryAll(el.contentDocument, sel, out);
@@ -96,7 +96,7 @@
 
   function isVisible(el) {
     if (!el.isConnected) return false;
-    if (el.closest("#waypoint-host")) return false;
+    if (el.closest("#waypoint-host") || el.getRootNode()?.host?.id === "waypoint-host") return false; // Waypoint's own bar and pill
     if (el.closest("[aria-hidden=true],[inert]")) return false;
     const r = el.getBoundingClientRect();
     if (r.width < 2 || r.height < 2) return false;
@@ -448,70 +448,168 @@
   shadow.innerHTML = `
     <style>
       :host{all:initial}
-      .ring{position:fixed;border:2px solid #4f7cff;border-radius:8px;box-shadow:0 0 0 9999px rgba(10,16,34,.28),0 0 0 4px rgba(79,124,255,.35);transition:left .18s ease,top .18s ease,width .18s ease,height .18s ease,opacity .15s;display:none}
-      .bubble{position:fixed;max-width:320px;background:#111a33;color:#f4f6ff;font:13px/1.45 system-ui,-apple-system,sans-serif;padding:12px 14px 10px;border-radius:10px;box-shadow:0 10px 30px rgba(0,0,0,.35);pointer-events:auto;display:none;animation:in .16s ease-out}
-      .bubble .step{font-size:11px;letter-spacing:.04em;text-transform:uppercase;color:#9fb3ff;margin-bottom:4px;padding-right:18px}
-      .bubble .why{color:#c9d2f0;font-size:12px;margin-top:6px}
+      /* Waypoint theme: wayfinding signage. Ink surfaces, amber = "here / go", green = on this device,
+         blue = cloud. Condensed signage face for the wordmark, IBM Plex for reading. */
+      :host{--ink0:#0c110f;--ink1:#121916;--ink2:#1a2420;--ink3:#22302a;--line:#2b3833;--text:#edf2ec;--muted:#8fa39a;--signal:#ffb224;--signal-ink:#1f1500;--device:#3ddc97;--cloud:#74b7ff;--danger:#ff6f59;--sans:"WP Sans",system-ui,-apple-system,sans-serif;--mono:"WP Mono",ui-monospace,monospace;--display:"WP Display","Arial Narrow",sans-serif}
+      *{box-sizing:border-box}
+      button{font:inherit;color:inherit}
+      /* ---- guide ring + bubble ---- */
+      .ring{position:fixed;border:2px solid var(--signal);border-radius:9px;box-shadow:0 0 0 9999px rgba(8,12,10,.32),0 0 0 5px rgba(255,178,36,.28);transition:left .18s ease,top .18s ease,width .18s ease,height .18s ease,opacity .15s;display:none}
+      .ring::after{content:"";position:absolute;inset:-7px;border:1px dashed rgba(255,178,36,.55);border-radius:12px}
+      .bubble{position:fixed;max-width:330px;background:var(--ink1);color:var(--text);font:13.5px/1.5 var(--sans);padding:13px 15px 11px;border:1px solid var(--line);border-radius:12px;box-shadow:0 14px 40px rgba(0,0,0,.45);pointer-events:auto;display:none;animation:in .16s ease-out}
+      .bubble .step{font:500 10.5px/1 var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--signal);margin-bottom:7px;padding-right:20px;display:flex;align-items:center;gap:6px}
+      .bubble .step::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--signal);box-shadow:0 0 0 3px rgba(255,178,36,.22)}
+      .bubble .why{color:#b9c6bf;font-size:12.5px;margin-top:6px}
       .bubble .why:empty,.bubble .text:empty{display:none}
-      .bubble .src{color:#7f8bb0;font-size:10.5px;margin-top:8px}
+      .bubble .src{color:var(--muted);font:10.5px/1.3 var(--mono)}
       .bubble .src:empty{display:none}
-      .bubble .doc{color:#9fb3ff;font-size:11px;margin-left:8px;text-decoration:none;border-bottom:1px dotted #9fb3ff}
-      .bubble .doc:hover{color:#c9d6ff}
+      .bubble .doc{color:var(--signal);font:500 11px var(--mono);margin-left:auto;text-decoration:none;border-bottom:1px dotted var(--signal)}
+      .bubble .doc:hover{filter:brightness(1.15)}
       .bubble .doc[hidden]{display:none}
-      .bubble .foot{display:flex;align-items:baseline;margin-top:8px}
-      .bubble .foot .src{margin-top:0}
-      .bubble.explain{max-width:340px}
-      .bubble .title{font-weight:650;font-size:14px;margin-bottom:4px;padding-right:18px}
+      .bubble .foot{display:flex;align-items:baseline;gap:10px;margin-top:10px}
+      .bubble .foot:has(.src:empty):has(.doc[hidden]){display:none}
+      .bubble.explain{max-width:350px}
+      .bubble .title{font:600 15px/1.3 var(--sans);margin-bottom:5px;padding-right:20px}
       .bubble .title:empty{display:none}
-      .bubble.streaming .text::after{content:"";display:inline-block;width:7px;height:14px;margin-left:2px;vertical-align:-2px;background:#9fb3ff;border-radius:1px;animation:blink 1s steps(1) infinite}
-      .bubble .loading{display:none;align-items:center;gap:8px;color:#c9d2f0;font-size:12.5px}
+      .bubble.streaming .text::after{content:"";display:inline-block;width:7px;height:14px;margin-left:2px;vertical-align:-2px;background:var(--device);border-radius:1px;animation:blink 1s steps(1) infinite}
+      .bubble .loading{display:none;align-items:center;gap:9px;color:#b9c6bf;font-size:12.5px}
       .bubble.loading .loading{display:flex}
       .bubble.loading .text{display:none}
-      .spinner{width:14px;height:14px;border-radius:50%;border:2px solid rgba(159,179,255,.3);border-top-color:#9fb3ff;animation:spin .8s linear infinite;flex:none}
+      .spinner{width:14px;height:14px;border-radius:50%;border:2px solid rgba(61,220,151,.25);border-top-color:var(--device);animation:spin .8s linear infinite;flex:none}
       .bubble .nav{display:none;align-items:center;gap:6px;margin-top:12px}
       .bubble.explain .nav{display:flex}
       .bubble .nav .back[hidden]{visibility:hidden;display:inline-block}
       .bubble .nav .next{margin-left:auto}
-      @keyframes blink{50%{opacity:0}}
-      @keyframes spin{to{transform:rotate(360deg)}}
-      .bubble .scroll{display:none;margin-top:10px;padding:8px 10px;align-items:center;gap:10px;color:#ffd78a;font-size:14px;font-weight:600;background:rgba(255,215,138,.1);border-radius:8px}
+      .bubble.nonav .nav{display:none}
+      .bubble .scroll{display:none;margin-top:10px;padding:8px 10px;align-items:center;gap:10px;color:var(--signal);font:600 14px var(--sans);background:rgba(255,178,36,.1);border-radius:8px}
       .bubble.away .scroll,.bubble.covered .scroll{display:flex}
       .bubble.covered .scroll-icon,.bubble.covered .show-me{display:none}
-      .ring.covered{border-style:dashed;opacity:.7}
+      .ring.covered{border-style:dashed;opacity:.75}
       .scroll-icon{flex:none;width:22px;height:22px;animation:nudge 1.1s ease-in-out infinite}
       .bubble.up .scroll-icon{transform:rotate(180deg);animation-name:nudge-up}
       .scroll .btn{margin-left:auto}
+      .x{position:absolute;top:7px;right:8px;cursor:pointer;color:var(--muted);font-size:15px;line-height:1;background:none;border:0;padding:3px 5px;border-radius:5px}
+      .x:hover,.x:focus-visible{background:var(--ink3);color:var(--text);outline:none}
+      .btn{font:600 12.5px var(--sans);border:0;border-radius:7px;padding:5px 11px;cursor:pointer;background:var(--signal);color:var(--signal-ink)}
+      .btn:hover{filter:brightness(1.07)}
+      .btn.ghost{background:transparent;color:var(--text);border:1px solid var(--line)}
+      .btn:focus-visible,.tool:focus-visible,.icon:focus-visible,.site:focus-visible,.nano:focus-visible,.go:focus-visible{outline:2px solid var(--signal);outline-offset:2px}
+      .arrow{position:absolute;width:12px;height:12px;background:var(--ink1);border-left:1px solid var(--line);border-top:1px solid var(--line);transform:rotate(45deg)}
+      .arrow[style*="bottom"]{border:0;border-right:1px solid var(--line);border-bottom:1px solid var(--line)}
+      .arrow[style*="left: -6px"]{border:0;border-left:1px solid var(--line);border-bottom:1px solid var(--line)}
+      .arrow[style*="right: -6px"]{border:0;border-right:1px solid var(--line);border-top:1px solid var(--line)}
+      /* ---- status chip (bottom right) ---- */
+      .pill{position:fixed;bottom:16px;right:16px;display:none;align-items:center;gap:9px;background:var(--ink1);color:var(--text);font:12.5px/1.3 var(--sans);padding:8px 10px 8px 12px;border:1px solid var(--line);border-radius:999px;box-shadow:0 8px 24px rgba(0,0,0,.35);pointer-events:auto}
+      .pill.busy{animation:in .18s ease-out .3s both}
+      .pill .dot{width:8px;height:8px;border-radius:50%;background:var(--signal);animation:pulse 1s ease-in-out infinite}
+      .pill:not(.busy) .dot{display:none}
+      .pill .acts{display:none;gap:4px}
+      .pill.paused .acts{display:flex}
+      .pill.done .dot{display:block;background:var(--device);animation:none}
+      .pill.pick .dot{display:block;background:var(--device);animation:none}
+      @keyframes in{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
+      @keyframes drop{from{opacity:0;transform:translate(-50%,-10px) scale(.985)}to{opacity:1;transform:translate(-50%,0)}}
+      @keyframes pulse{0%,100%{opacity:.35}50%{opacity:1}}
+      @keyframes blink{50%{opacity:0}}
+      @keyframes spin{to{transform:rotate(360deg)}}
       @keyframes nudge{0%,100%{translate:0 -2px}50%{translate:0 3px}}
       @keyframes nudge-up{0%,100%{translate:0 2px}50%{translate:0 -3px}}
-      .x{position:absolute;top:6px;right:8px;cursor:pointer;color:#9fb3ff;font-size:14px;background:none;border:0;padding:2px 4px;border-radius:4px}
-      .x:hover,.x:focus-visible{background:rgba(159,179,255,.15);outline:none}
-      .btn{font:600 12px system-ui,-apple-system,sans-serif;border:0;border-radius:6px;padding:4px 10px;cursor:pointer;background:#4f7cff;color:#fff}
-      .btn.ghost{background:transparent;color:#9fb3ff;padding:4px 6px}
-      .btn:focus-visible{outline:2px solid #9fb3ff;outline-offset:2px}
-      .arrow{position:absolute;width:12px;height:12px;background:#111a33;transform:rotate(45deg)}
-      .pill{position:fixed;bottom:16px;right:16px;display:none;align-items:center;gap:8px;background:#111a33;color:#f4f6ff;font:12.5px/1.3 system-ui,-apple-system,sans-serif;padding:8px 10px 8px 12px;border-radius:999px;box-shadow:0 6px 20px rgba(0,0,0,.3);pointer-events:auto}
-      .pill.busy{animation:in .18s ease-out .3s both}
-      .pill .dot{width:8px;height:8px;border-radius:50%;background:#4f7cff;animation:pulse 1s ease-in-out infinite}
-      .pill:not(.busy) .dot{display:none}
-      .pill .acts{display:none;gap:2px}
-      .pill.paused .acts{display:flex}
-      .pill.done .dot{display:block;background:#3ccf8e;animation:none}
-      @keyframes in{from{opacity:0;transform:translateY(3px)}to{opacity:1;transform:none}}
-      @keyframes pulse{0%,100%{opacity:.35}50%{opacity:1}}
-      .ring.pick{border-color:#22c39a;box-shadow:0 0 0 9999px rgba(10,16,34,.18),0 0 0 4px rgba(34,195,154,.3)}
-      .bubble.nonav .nav{display:none}
-      .pick{position:fixed;display:none;border:2px solid #22c39a;background:rgba(34,195,154,.12);border-radius:6px;box-shadow:0 0 0 1px rgba(0,0,0,.25);transition:left .1s ease,top .1s ease,width .1s ease,height .1s ease;pointer-events:none}
-      .pick.pinned{background:rgba(34,195,154,.05);box-shadow:0 0 0 4px rgba(34,195,154,.25)}
-      .pick-tag{position:fixed;display:none;align-items:center;gap:6px;max-width:360px;background:#0f2a24;color:#e3fff6;font:600 11.5px/1.25 system-ui,-apple-system,sans-serif;padding:4px 6px 4px 8px;border-radius:6px;box-shadow:0 4px 14px rgba(0,0,0,.3);pointer-events:none;white-space:nowrap}
-      .pick-tag .kind{color:#7ff0cc;text-transform:uppercase;font-size:10px;letter-spacing:.05em;flex:none}
+      /* ---- picker: green, because what you pick stays on this device ---- */
+      .ring.pick{border-color:var(--device);box-shadow:0 0 0 9999px rgba(8,12,10,.2),0 0 0 5px rgba(61,220,151,.25)}
+      .ring.pick::after{border-color:rgba(61,220,151,.5)}
+      .pick{position:fixed;display:none;border:2px solid var(--device);background:rgba(61,220,151,.1);border-radius:7px;box-shadow:0 0 0 1px rgba(0,0,0,.25);transition:left .1s ease,top .1s ease,width .1s ease,height .1s ease;pointer-events:none}
+      .pick.pinned{background:rgba(61,220,151,.04);box-shadow:0 0 0 5px rgba(61,220,151,.22)}
+      .pick-tag{position:fixed;display:none;align-items:center;gap:7px;max-width:380px;background:var(--ink0);color:var(--text);font:500 12px/1.25 var(--sans);padding:5px 6px 5px 8px;border:1px solid rgba(61,220,151,.45);border-radius:7px;box-shadow:0 6px 18px rgba(0,0,0,.35);pointer-events:none;white-space:nowrap}
+      .pick-tag .kind{color:var(--device);text-transform:uppercase;font:500 10px var(--mono);letter-spacing:.08em;flex:none}
       .pick-tag .name{overflow:hidden;text-overflow:ellipsis}
-      .pick-tag .eye{flex:none;color:#ffd78a;font-size:11px}
-      .pick-tag .unpin{display:none;flex:none;background:none;border:0;color:#9ff0d6;cursor:pointer;font:14px/1 system-ui;padding:0 2px;border-radius:4px}
+      .pick-tag .eye{flex:none;color:var(--signal);font-size:11px}
+      .pick-tag .unpin{display:none;flex:none;background:none;border:0;color:var(--muted);cursor:pointer;font:15px/1 var(--sans);padding:0 3px;border-radius:4px}
       .pick-tag.pinned{pointer-events:auto}
       .pick-tag.pinned .unpin{display:inline}
-      .pick-tag .unpin:hover,.pick-tag .unpin:focus-visible{background:rgba(127,240,204,.15);outline:none}
-      .pill.pick .dot{display:block;background:#22c39a;animation:none}
-      @media (prefers-reduced-motion:reduce){.ring,.bubble,.pill,.pill .dot,.scroll-icon,.spinner,.bubble.streaming .text::after,.pick{transition:none;animation:none}}
+      .pick-tag .unpin:hover,.pick-tag .unpin:focus-visible{background:var(--ink3);color:var(--text);outline:none}
+      /* ---- the command bar ---- */
+      .bar{position:fixed;top:16px;left:50%;transform:translateX(-50%);width:min(680px,calc(100vw - 32px));display:none;flex-direction:column;gap:12px;background:var(--ink1);color:var(--text);font:14px/1.45 var(--sans);border:1px solid var(--line);border-radius:16px;padding:14px 16px 14px;box-shadow:0 24px 70px rgba(0,0,0,.5),0 0 0 1px rgba(0,0,0,.4);pointer-events:auto;animation:drop .18s cubic-bezier(.2,.8,.2,1)}
+      .bar.open{display:flex}
+      .bar::before{content:"";position:absolute;left:18px;right:18px;top:0;height:2px;background:repeating-linear-gradient(90deg,var(--signal) 0 10px,transparent 10px 18px);border-radius:2px;opacity:.9}
+      .bar-head{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:10px}
+      .wordmark{font:800 24px/1 var(--display);letter-spacing:.2em;display:inline-flex;align-items:center;justify-self:center;color:var(--text);user-select:none;padding-left:.2em}
+      .wordmark .o{width:.74em;height:.74em;position:relative;margin:0 .07em 0 .03em;display:inline-block}
+      .wordmark .o::before{content:"";position:absolute;inset:0;border:.13em solid var(--signal);border-radius:50%}
+      .wordmark .o::after{content:"";position:absolute;inset:33%;background:var(--signal);border-radius:50%}
+      .nano{justify-self:start;display:inline-flex;align-items:center;gap:7px;background:none;border:1px solid transparent;border-radius:999px;padding:4px 9px 4px 7px;font:500 11.5px var(--mono);color:var(--muted);cursor:pointer;white-space:nowrap;max-width:100%;overflow:hidden;text-overflow:ellipsis}
+      .nano:hover{border-color:var(--line);color:var(--text)}
+      .nano .dot{width:8px;height:8px;border-radius:50%;flex:none;background:var(--muted)}
+      .nano.ready .dot{background:var(--device);box-shadow:0 0 0 3px rgba(61,220,151,.18)}
+      .nano.warn{color:var(--signal)} .nano.warn .dot{background:var(--signal)}
+      .head-right{justify-self:end;display:flex;align-items:center;gap:4px}
+      .site{display:inline-flex;align-items:center;gap:8px;background:none;border:1px solid var(--line);border-radius:999px;padding:3px 4px 3px 10px;font:500 11.5px var(--mono);color:var(--muted);cursor:pointer;max-width:200px}
+      .site .site-host{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      .site .sw{width:28px;height:16px;border-radius:999px;background:var(--ink3);position:relative;flex:none;transition:background .15s}
+      .site .knob{position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:var(--muted);transition:transform .15s,background .15s}
+      .site[aria-checked="true"]{color:var(--text)}
+      .site[aria-checked="true"] .sw{background:rgba(61,220,151,.3)}
+      .site[aria-checked="true"] .knob{transform:translateX(12px);background:var(--device)}
+      .icon{width:30px;height:30px;display:inline-grid;place-items:center;background:none;border:0;border-radius:8px;color:var(--muted);cursor:pointer}
+      .icon:hover,.icon[aria-expanded="true"]{background:var(--ink3);color:var(--text)}
+      .icon svg{width:17px;height:17px}
+      .menu{display:none;flex-direction:column;gap:2px;background:var(--ink0);border:1px solid var(--line);border-radius:12px;padding:6px}
+      .menu.open{display:flex}
+      .menu .row{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:8px;background:none;border:0;text-align:left;cursor:pointer;color:var(--text);font:13px var(--sans)}
+      .menu .row:hover{background:var(--ink2)}
+      .menu .row .hint{margin-left:auto;color:var(--muted);font:11px var(--mono)}
+      .menu .row .sw{margin-left:auto;width:28px;height:16px;border-radius:999px;background:var(--ink3);position:relative;flex:none}
+      .menu .row .knob{position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:var(--muted);transition:transform .15s}
+      .menu .row[aria-checked="true"] .sw{background:rgba(255,178,36,.3)}
+      .menu .row[aria-checked="true"] .knob{transform:translateX(12px);background:var(--signal)}
+      .menu .keys{display:flex;flex-wrap:wrap;gap:10px 16px;padding:8px 10px 4px;color:var(--muted);font-size:12px}
+      .kbd{font:500 10.5px var(--mono);padding:2px 5px;border:1px solid var(--line);border-bottom-width:2px;border-radius:5px;color:var(--text);background:var(--ink2);margin-right:4px}
+      .grantbar{display:none;align-items:center;gap:10px;padding:9px 10px 9px 12px;border-radius:10px;background:rgba(255,178,36,.1);border:1px solid rgba(255,178,36,.35);font-size:12.5px}
+      .grantbar.open{display:flex}
+      .grantbar .grant-text{flex:1}
+      .chip{display:none;align-items:center;gap:8px;padding:7px 8px 7px 10px;border:1px solid rgba(61,220,151,.45);background:rgba(61,220,151,.07);border-radius:10px;min-width:0}
+      .chip.open{display:flex}
+      .chip .chip-kind{font:500 10px var(--mono);letter-spacing:.08em;text-transform:uppercase;color:var(--device);flex:none}
+      .chip .chip-name{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1;min-width:0}
+      .chip .chip-eye{font:11px var(--mono);color:var(--signal);flex:none}
+      .chip .chip-x{background:none;border:0;color:var(--muted);cursor:pointer;font-size:16px;line-height:1;padding:0 4px;border-radius:5px}
+      .chip .chip-x:hover{background:var(--ink3);color:var(--text)}
+      .field{position:relative}
+      .q{width:100%;min-height:88px;max-height:240px;resize:none;background:var(--ink2);color:var(--text);border:1px solid var(--line);border-radius:12px;padding:14px 16px;font:17px/1.45 var(--sans);outline:none;transition:border-color .15s,box-shadow .15s}
+      .q::placeholder{color:#6f8178}
+      .q:focus{border-color:var(--signal);box-shadow:0 0 0 4px rgba(255,178,36,.14)}
+      .tools{display:flex;align-items:center;gap:6px}
+      .tool{display:inline-flex;align-items:center;gap:7px;height:34px;padding:0 12px;border-radius:9px;background:none;border:1px solid var(--line);color:var(--text);cursor:pointer;font:500 12.5px var(--sans)}
+      .tool svg{width:16px;height:16px;flex:none}
+      .tool:hover{border-color:#47574f;background:var(--ink2)}
+      .tool.pick-btn[aria-pressed="true"]{background:rgba(61,220,151,.16);border-color:var(--device);color:var(--device)}
+      .tool.cloud-btn[aria-pressed="true"]{background:rgba(116,183,255,.14);border-color:var(--cloud);color:var(--cloud)}
+      .spacer{flex:1}
+      .go{display:inline-flex;align-items:center;gap:8px;height:36px;padding:0 16px;border:0;border-radius:10px;background:var(--signal);color:var(--signal-ink);font:700 14px var(--sans);cursor:pointer}
+      .go:hover{filter:brightness(1.07)}
+      .go:disabled{opacity:.45;cursor:default;filter:none}
+      .go .kbd{background:rgba(0,0,0,.12);border-color:rgba(0,0,0,.2);color:var(--signal-ink);margin:0}
+      .bar-foot{display:flex;flex-direction:column;gap:8px}
+      .bar-foot:has(.bstatus:empty):has(.suggest:empty){display:none}
+      .bstatus{color:var(--muted);font:12px var(--mono);display:flex;align-items:center;gap:8px}
+      .bstatus:empty{display:none}
+      .bstatus.busy::before{content:"";width:7px;height:7px;border-radius:50%;background:var(--signal);animation:pulse 1s ease-in-out infinite;flex:none}
+      .suggest{display:flex;flex-wrap:wrap;gap:6px}
+      .suggest:empty{display:none}
+      .suggest button{background:none;border:1px dashed #3d4c45;border-radius:999px;padding:5px 11px;color:#c3cfc8;font:12.5px var(--sans);cursor:pointer}
+      .suggest button:hover{border-style:solid;border-color:var(--signal);color:var(--text)}
+      /* ---- mini status (the bar folded up while Waypoint works) ---- */
+      .mini{position:fixed;top:12px;left:50%;transform:translateX(-50%);display:none;align-items:center;gap:8px;max-width:min(560px,calc(100vw - 24px));background:var(--ink1);color:var(--text);border:1px solid var(--line);border-radius:999px;padding:5px 6px 5px 12px;font:13px/1.3 var(--sans);box-shadow:0 10px 30px rgba(0,0,0,.4);pointer-events:auto;animation:drop .16s ease-out}
+      .mini.open{display:flex}
+      .mini .mini-o{width:13px;height:13px;border-radius:50%;border:2.5px solid var(--signal);position:relative;flex:none}
+      .mini .mini-o::after{content:"";position:absolute;inset:2px;border-radius:50%;background:var(--signal)}
+      .mini.busy .mini-o{animation:pulse 1s ease-in-out infinite}
+      .mini.paused .mini-o{border-color:var(--muted)} .mini.paused .mini-o::after{background:var(--muted)}
+      .mini .mini-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+      .mini .mini-act{height:28px;min-width:28px;padding:0 9px;border-radius:999px;border:1px solid var(--line);background:none;color:var(--text);cursor:pointer;font:500 12px var(--sans);flex:none}
+      .mini .mini-act:hover{background:var(--ink3)}
+      .mini .mini-act.primary{background:var(--signal);color:var(--signal-ink);border-color:var(--signal)}
+      .mini .mini-act[hidden]{display:none}
+      @media (prefers-reduced-motion:reduce){.ring,.bubble,.pill,.pill .dot,.scroll-icon,.spinner,.bubble.streaming .text::after,.pick,.bar,.mini,.mini .mini-o,.bstatus.busy::before{transition:none;animation:none}}
     </style>
     <div class="ring"></div>
     <div class="pick"></div>
@@ -530,8 +628,55 @@
       <div class="foot"><div class="src"></div><a class="doc" target="_blank" rel="noopener noreferrer" hidden>Docs ↗</a></div><div class="arrow"></div>
     </div>
     <div class="pill" role="status" aria-live="polite"><span class="dot"></span><span class="pill-text"></span>
-      <span class="acts"><button class="btn resume">Resume</button><button class="btn ghost end">End</button></span></div>`;
+      <span class="acts"><button class="btn resume">Resume</button><button class="btn ghost end">End</button></span></div>
+    <div class="bar" role="dialog" aria-label="Waypoint">
+      <div class="bar-head">
+        <button class="nano" type="button" title="Gemini Nano on this device"><span class="dot"></span><span class="nano-text">Checking Nano…</span></button>
+        <div class="wordmark" aria-label="Waypoint">WAYP<span class="o" aria-hidden="true"></span>INT</div>
+        <div class="head-right">
+          <button class="site" type="button" role="switch" aria-checked="false" title="Waypoint on this site"><span class="site-host"></span><span class="sw"><span class="knob"></span></span></button>
+          <button class="icon gear" type="button" aria-label="Settings" aria-expanded="false" title="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg></button>
+          <button class="icon close" type="button" aria-label="Close (Esc)" title="Close (Esc)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
+        </div>
+      </div>
+      <div class="menu" role="menu">
+        <button class="row m-cloud" role="menuitemcheckbox" aria-checked="false">Cloud only <span class="sw"><span class="knob"></span></span></button>
+        <button class="row m-all" role="menuitemcheckbox" aria-checked="false">On for every site <span class="sw"><span class="knob"></span></span></button>
+        <button class="row m-trace" role="menuitem">Open Trace (what ran where) <span class="hint">side panel</span></button>
+        <button class="row m-setup" role="menuitem">Setup &amp; Gemini Nano help <span class="hint">new tab</span></button>
+        <div class="keys"><span><span class="kbd">Alt</span><span class="kbd">Shift</span><span class="kbd">W</span>open</span><span><span class="kbd">Alt</span><span class="kbd">Shift</span><span class="kbd">P</span>pick</span><span><span class="kbd">Esc</span>close</span><span><span class="kbd">↑</span><span class="kbd">↓</span>widen a pick</span></div>
+      </div>
+      <div class="grantbar"><span class="grant-text"></span><button class="btn grant-btn" type="button">Allow</button></div>
+      <div class="chip"><span class="chip-kind"></span><span class="chip-name"></span><span class="chip-eye" hidden>Nano will look at it</span><button class="chip-x" type="button" aria-label="Clear the picked element" title="Clear">×</button></div>
+      <div class="field"><textarea class="q" rows="3" spellcheck="false" aria-label="What do you need?"></textarea></div>
+      <div class="tools">
+        <button class="tool pick-btn" type="button" aria-pressed="false" title="Pick something on the page to ask about (Alt+Shift+P)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="7"/><path d="M12 2v4M12 18v4M2 12h4M18 12h4"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/></svg><span>Pick</span></button>
+        <button class="tool cloud-btn" type="button" aria-pressed="false" title="Skip Gemini Nano and use cloud Gemini only"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" aria-hidden="true"><path d="M7 18h10.5a4 4 0 0 0 .6-7.96A6 6 0 0 0 6.3 9.2 4.5 4.5 0 0 0 7 18z"/></svg><span>Cloud only</span></button>
+        <button class="tool trace-btn" type="button" title="Open the Trace panel: every AI call, where it ran, what was sent"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="6" cy="5" r="2"/><circle cx="18" cy="12" r="2"/><circle cx="6" cy="19" r="2"/><path d="M8 5h3a3 3 0 0 1 3 3v1M16 12h-2a3 3 0 0 0-3 3v1a3 3 0 0 1-3 3" stroke-dasharray="2 2.5"/></svg><span>Trace</span></button>
+        <span class="spacer"></span>
+        <button class="go" type="button" disabled>Go <span class="kbd">↵</span></button>
+      </div>
+      <div class="bar-foot"><div class="bstatus" role="status" aria-live="polite"></div><div class="suggest"></div></div>
+    </div>
+    <div class="mini" role="status" aria-live="polite">
+      <span class="mini-o" aria-hidden="true"></span><span class="mini-text"></span>
+      <button class="mini-act replan" type="button" hidden>Re-plan</button>
+      <button class="mini-act pause" type="button" title="Pause">Pause</button>
+      <button class="mini-act end" type="button" title="End">End</button>
+      <button class="mini-act open primary" type="button" title="Open the bar (Alt+Shift+W)">Open</button>
+    </div>`;
   document.documentElement.appendChild(host);
+  if (!document.getElementById("waypoint-fonts")) {
+    const f = document.createElement("style");
+    f.id = "waypoint-fonts";
+    const url = (n) => chrome.runtime.getURL(`fonts/${n}.woff2`);
+    f.textContent = [["WP Display", "display-800", 800], ["WP Display", "display-700", 700], ["WP Sans", "sans-400", 400], ["WP Sans", "sans-500", 500], ["WP Sans", "sans-600", 600], ["WP Mono", "mono-400", 400], ["WP Mono", "mono-500", 500]]
+      .map(([fam, file, w]) => `@font-face{font-family:"${fam}";src:url("${url(file)}") format("woff2");font-weight:${w};font-display:swap}`)
+      .join("");
+    (document.head || document.documentElement).appendChild(f);
+  }
+  // Typing in the bar must not trigger the page's keyboard shortcuts ("/" for search, "." for menus…).
+  for (const type of ["keydown", "keyup", "keypress"]) host.addEventListener(type, (e) => e.stopPropagation());
   const $s = (sel) => shadow.querySelector(sel);
 
   // Clicks on the bubble or chip are ours: keep them from reaching the page, or the page treats them
@@ -580,6 +725,10 @@
   let pillTimer = 0;
   function pill(mode, text = "") {
     clearTimeout(pillTimer);
+    if (barUsed && (mode === "busy" || mode === "paused" || mode === "done")) {
+      pillEl.style.display = "none";
+      return miniState(mode, text);
+    }
     if (!mode) {
       pillEl.style.display = "none";
       lower();
@@ -692,6 +841,9 @@
       obstacles.push(r);
     }
   }
+  function addOwnObstacles() {
+    for (const el of [barEl, miniEl]) if (el.classList.contains("open")) obstacles.push(el.getBoundingClientRect());
+  }
   const overlaps = (a, b) => a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
 
   /** Place the bubble beside the box: below, above, right or left, avoiding open menus and dialogs. */
@@ -754,6 +906,7 @@
     const vis = { left: Math.max(r.left, c.left), top: Math.max(r.top, c.top), right: Math.min(r.right, c.right), bottom: Math.min(r.bottom, c.bottom) };
     if (++frame % 6 === 0) {
       refreshObstacles();
+      addOwnObstacles();
       // Covered = the control is really under something else, judged at its centre and four inner points
       // (the centre alone was fooled by a passing tooltip). Only the control itself counts: a hover-only
       // control's row is often overlapped by its own expanded details.
@@ -799,6 +952,9 @@
     covered = false;
     bubbleMode = mode === "explain" ? "explain" : mode === "pick" ? "pick" : "guide";
     pill(null);
+    // The mini status follows along: what to do now, with Pause / End / Open next to it.
+    if (barUsed && bubbleMode !== "pick" && !loading && !streaming) miniState("guide", title || text);
+    if (barUsed && bubbleMode === "pick" && !loading && !streaming && miniEl.classList.contains("open")) miniState("done", "Answered");
     raise();
     bubble.classList.toggle("explain", bubbleMode !== "guide");
     bubble.classList.toggle("nonav", bubbleMode === "pick");
@@ -833,6 +989,10 @@
     }
     bubble.classList.toggle("loading", !!loading);
     bubble.classList.toggle("streaming", !!streaming);
+    // A streamed explainer finished: the mini status stops "thinking" and names what's showing.
+    if (barUsed && !loading && !streaming && bubbleMode === "explain") miniState("guide", $s(".title").textContent || text);
+    // A picked element's answer is complete on its own: the pill says so and folds away.
+    if (barUsed && !loading && !streaming && bubbleMode === "pick" && miniEl.classList.contains("open")) miniState("done", "Answered");
   }
 
   function hide() {
@@ -874,6 +1034,7 @@
   // Test hook: page scripts can drive Waypoint with window.postMessage({ __waypoint: "ask", q }).
   window.addEventListener("message", (e) => {
     if (e.source !== window || !e.data || !e.data.__waypoint) return;
+    if (e.data.__waypoint === "bar") return void toggleBar(); // same as the toolbar icon / Alt+Shift+W
     safeSend({ type: "page-command", command: e.data.__waypoint, q: e.data.q });
   });
 
@@ -1164,6 +1325,285 @@
   // Right-click "Ask Waypoint about this": remember what was right-clicked.
   window.addEventListener("contextmenu", (e) => { if (!picking) lastContextTarget = e.composedPath()[0]; }, true);
 
+  // ---------- The command bar ----------
+  // Opened by the toolbar icon or Alt+Shift+W. The bar is the main way in: ask, pick, toggle cloud-only,
+  // open the Trace panel. While Waypoint works it folds into the mini status at the top.
+  const barEl = shadow.querySelector(".bar");
+  const miniEl = shadow.querySelector(".mini");
+  const qEl = shadow.querySelector(".q");
+  const goEl = shadow.querySelector(".go");
+  const b$ = (sel) => shadow.querySelector(sel);
+  let barUsed = false;
+  let snap = null; // the brain's view of things (status, nano, route, pick, settings…)
+  let site = null;
+  let miniMode = null;
+  const toBrain = (msg) => chrome.runtime.sendMessage({ ...msg, to: "brain" }).catch(() => {});
+  const toSW = (msg) => chrome.runtime.sendMessage({ ...msg, to: "sw" }).catch(() => null);
+
+  const PLACEHOLDERS = [
+    "What do you need? e.g. “Set log retention to 30 days”",
+    "Ask how to do something… or “What do these settings do?”",
+    "“Where do I manage my API keys?”",
+    "“Walk me through this page”",
+  ];
+  let phIdx = 0;
+
+  async function openBar({ focus = true } = {}) {
+    barUsed = true;
+    raise();
+    miniEl.classList.remove("open");
+    barEl.classList.add("open");
+    qEl.placeholder = PLACEHOLDERS[phIdx++ % PLACEHOLDERS.length];
+    if (focus) setTimeout(() => qEl.focus(), 30);
+    toSW({ type: "ensure-brain" });
+    const [s1, s2] = await Promise.all([chrome.runtime.sendMessage({ type: "brain:snapshot" }).catch(() => null), toSW({ type: "site-info", url: location.href })]);
+    if (s1) snap = s1;
+    site = s2;
+    renderBar();
+  }
+  function closeBar() {
+    barEl.classList.remove("open");
+    closeMenu();
+    if (snap && (snap.mode && snap.mode !== "idle" || snap.paused)) miniEl.classList.add("open");
+    lower();
+  }
+  const barOpen = () => barEl.classList.contains("open");
+  function toggleBar() {
+    if (barOpen()) closeBar();
+    else openBar();
+  }
+
+  function renderNano() {
+    const n = snap?.nano || { state: "checking", text: "Checking Nano…" };
+    const btn = b$(".nano");
+    btn.className = `nano ${n.state === "ready" ? "ready" : n.state === "checking" || n.state === "warming" ? "" : "warn"}`;
+    b$(".nano-text").textContent = n.state === "ready" ? `Nano on-device${n.vision ? " · vision" : ""}` : n.state === "warming" ? "Waking Nano…" : n.state === "checking" ? "Checking Nano…" : "Set up Gemini Nano";
+    btn.title = n.text || "";
+  }
+  function renderSite() {
+    const el = b$(".site");
+    el.hidden = !site?.web;
+    if (!site?.web) return;
+    b$(".site-host").textContent = site.host.replace(/^www\./, "").split(".").slice(-3).join("."); // console.firebase.google.com → firebase.google.com
+    const on = site.allowed || site.all;
+    el.setAttribute("aria-checked", String(!!on));
+    el.title = site.all ? "On for every site (Settings to change)" : on ? `On for ${site.host}. Click to turn off.` : `Off for ${site.host}: click to keep Waypoint on here`;
+    b$(".m-all").setAttribute("aria-checked", String(!!site.all));
+  }
+  function renderChip() {
+    const p = snap?.pick;
+    const chip = b$(".chip");
+    chip.classList.toggle("open", !!p);
+    if (!p) return;
+    qEl.placeholder = `Ask about “${p.desc.name}”…`;
+    b$(".chip-kind").textContent = p.desc.kind;
+    b$(".chip-name").textContent = p.desc.name;
+    b$(".chip-eye").hidden = !p.desc.vision;
+  }
+  function renderGrant() {
+    const g = snap?.grant;
+    b$(".grantbar").classList.toggle("open", !!g);
+    if (g) b$(".grant-text").textContent = g.text;
+  }
+  function renderSuggest() {
+    const box = b$(".suggest");
+    box.innerHTML = "";
+    const items = snap?.pick
+      ? snap.pick.suggestions.map((t) => ({ t }))
+      : qEl.value.trim()
+        ? []
+        : [{ t: "Walk me through this page" }, { t: "Pick something to ask about", pick: true }];
+    for (const it of items) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.textContent = it.t;
+      b.addEventListener("click", () => (it.pick ? startPickFromBar() : submit(it.t)));
+      box.appendChild(b);
+    }
+  }
+  function renderBar() {
+    renderNano();
+    renderSite();
+    renderChip();
+    renderGrant();
+    renderSuggest();
+    b$(".cloud-btn").setAttribute("aria-pressed", String(!!snap?.settings?.cloudOnly));
+    b$(".m-cloud").setAttribute("aria-checked", String(!!snap?.settings?.cloudOnly));
+    b$(".pick-btn").setAttribute("aria-pressed", String(!!snap?.picking));
+    setBarStatus(snap?.status || "", false);
+    goEl.disabled = !qEl.value.trim();
+  }
+  function setBarStatus(text, busy) {
+    const el = b$(".bstatus");
+    el.textContent = text || "";
+    el.classList.toggle("busy", !!busy);
+  }
+  function miniState(mode, text) {
+    miniMode = mode;
+    if (text) b$(".mini-text").textContent = text;
+    miniEl.classList.toggle("busy", mode === "busy");
+    miniEl.classList.toggle("paused", mode === "paused");
+    b$(".mini .pause").textContent = mode === "paused" ? "Resume" : "Pause";
+    if (!barOpen()) {
+      raise();
+      miniEl.classList.add("open");
+    }
+    if (mode === "done") {
+      b$(".mini-text").textContent = text || "Done";
+      clearTimeout(pillTimer);
+      pillTimer = setTimeout(() => {
+        miniEl.classList.remove("open");
+        lower();
+      }, 2600);
+    }
+  }
+
+  function submit(text) {
+    const q = (text ?? qEl.value).trim();
+    if (!q) return;
+    toBrain({ type: "bar:ask", q });
+    qEl.value = "";
+    goEl.disabled = true;
+    // Fold up so the page (and the guide) is visible; progress shows in the mini status.
+    barEl.classList.remove("open");
+    closeMenu();
+    b$(".mini-text").textContent = snap?.pick ? `Asking about “${snap.pick.desc.name}”…` : "Thinking…";
+    miniState("busy");
+  }
+  function startPickFromBar() {
+    barEl.classList.remove("open");
+    miniEl.classList.remove("open");
+    toBrain({ type: "bar:pick" });
+  }
+  const closeMenu = () => {
+    b$(".menu").classList.remove("open");
+    b$(".gear").setAttribute("aria-expanded", "false");
+  };
+
+  qEl.addEventListener("input", () => {
+    goEl.disabled = !qEl.value.trim();
+    qEl.style.height = "auto";
+    qEl.style.height = `${Math.min(240, Math.max(88, qEl.scrollHeight + 2))}px`;
+    if (!snap?.pick) renderSuggest();
+  });
+  qEl.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      submit();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      closeBar();
+    }
+  });
+  barEl.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") closeBar();
+  });
+  goEl.addEventListener("click", () => submit());
+  b$(".close").addEventListener("click", closeBar);
+  b$(".pick-btn").addEventListener("click", startPickFromBar);
+  b$(".cloud-btn").addEventListener("click", () => toBrain({ type: "bar:settings", settings: { cloudOnly: !snap?.settings?.cloudOnly } }));
+  b$(".m-cloud").addEventListener("click", () => toBrain({ type: "bar:settings", settings: { cloudOnly: !snap?.settings?.cloudOnly } }));
+  const openTrace = async () => {
+    const r = await toSW({ type: "trace" });
+    if (!r?.ok) setBarStatus("Open Trace from Chrome's side panel menu (the panel icon in the toolbar).", false);
+  };
+  b$(".trace-btn").addEventListener("click", openTrace);
+  b$(".m-trace").addEventListener("click", openTrace);
+  b$(".m-setup").addEventListener("click", () => toSW({ type: "onboarding" }));
+  b$(".nano").addEventListener("click", () => {
+    if (snap?.nano?.state !== "ready") toSW({ type: "onboarding", hash: "nano" });
+  });
+  b$(".gear").addEventListener("click", () => {
+    const m = b$(".menu");
+    const open = !m.classList.contains("open");
+    m.classList.toggle("open", open);
+    b$(".gear").setAttribute("aria-expanded", String(open));
+  });
+  b$(".m-all").addEventListener("click", async () => {
+    if (site?.all) {
+      await toSW({ type: "all-sites-off" });
+      site = await toSW({ type: "site-info", url: location.href });
+      renderSite();
+    } else toSW({ type: "grant", origins: ["<all_urls>"], text: "Use Waypoint on any site you visit, and let Nano see charts and icons you pick (screenshots stay on your device)." });
+  });
+  b$(".site").addEventListener("click", async () => {
+    if (!site?.web) return;
+    if (site.all) {
+      b$(".menu").classList.add("open");
+      return;
+    }
+    if (site.allowed && !site.builtIn) {
+      await toSW({ type: "site-off", pattern: site.pattern });
+      site = await toSW({ type: "site-info", url: location.href });
+      renderSite();
+    } else if (!site.allowed) toSW({ type: "grant", origins: [site.pattern], text: `Keep Waypoint on for ${site.host}, so it can guide you here any time.` });
+  });
+  b$(".grant-btn").addEventListener("click", () => snap?.grant && toSW({ type: "grant", origins: snap.grant.origins, text: snap.grant.text }));
+  b$(".chip-x").addEventListener("click", () => toBrain({ type: "bar:pick-clear" }));
+  b$(".mini .open").addEventListener("click", () => openBar());
+  b$(".mini .end").addEventListener("click", () => {
+    toBrain({ type: "bar:end" });
+    miniEl.classList.remove("open");
+    lower();
+  });
+  b$(".mini .pause").addEventListener("click", () => toBrain({ type: miniMode === "paused" ? "bar:resume" : "bar:pause" }));
+  b$(".mini .replan").addEventListener("click", () => toBrain({ type: "bar:replan" }));
+  miniEl.addEventListener("dblclick", () => openBar());
+
+  /** Updates from the brain. */
+  function onUi(msg) {
+    snap ||= {};
+    switch (msg.ui) {
+      case "status":
+        snap.status = msg.text;
+        if (barOpen()) setBarStatus(msg.text, false);
+        if (miniEl.classList.contains("open") || (barUsed && !barOpen() && snap.mode !== "idle")) b$(".mini-text").textContent = msg.text;
+        break;
+      case "nano":
+        snap.nano = msg.nano;
+        renderNano();
+        break;
+      case "route":
+        snap.route = msg.route;
+        snap.mode = msg.route ? (msg.route.kind === "tour" ? "explain" : "route") : snap.mode;
+        break;
+      case "paused":
+        snap.paused = msg.on;
+        if (barUsed) miniState(msg.on ? "paused" : "busy", msg.on ? "Paused" : "");
+        break;
+      case "replan":
+        snap.replan = msg.visible;
+        b$(".mini .replan").hidden = !msg.visible;
+        break;
+      case "picking":
+        snap.picking = msg.on;
+        if (msg.on) {
+          barEl.classList.remove("open");
+          miniEl.classList.remove("open");
+        }
+        b$(".pick-btn").setAttribute("aria-pressed", String(!!msg.on));
+        break;
+      case "pick":
+        snap.pick = msg.pick;
+        if (msg.pick) openBar();
+        else if (barOpen()) renderBar();
+        break;
+      case "grant":
+        snap.grant = msg.grant;
+        if (msg.grant?.kind === "screenshot") openBar({ focus: false });
+        else renderGrant();
+        break;
+      case "query":
+        qEl.value = msg.text || "";
+        goEl.disabled = !qEl.value.trim();
+        break;
+      case "settings":
+        snap.settings = msg.settings;
+        if (barOpen()) renderBar();
+        break;
+    }
+  }
+
   // ---------- Messages from the side panel ----------
 
   chrome.runtime.onMessage.addListener((msg, _sender, reply) => {
@@ -1205,6 +1645,18 @@
         break;
       case "update":
         update(msg);
+        reply({ ok: true });
+        break;
+      case "ui":
+        onUi(msg);
+        reply({ ok: true });
+        break;
+      case "bar-toggle":
+        toggleBar();
+        reply({ ok: true });
+        break;
+      case "bar-pick":
+        startPickFromBar();
         reply({ ok: true });
         break;
       case "pick-start":
@@ -1260,6 +1712,8 @@
         break;
       case "status":
         host.dataset.status = msg.text;
+        // During a tour the pill says which stop is showing ("Explaining 2 of 5: Region").
+        if (barUsed && bubbleMode === "explain" && target && /^Explaining /.test(msg.text)) miniState("guide", msg.text);
         console.log(`[Waypoint] ${msg.text}`);
         reply({ ok: true });
         break;

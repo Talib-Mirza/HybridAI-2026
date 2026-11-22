@@ -1,0 +1,72 @@
+/* Waypoint design system — wayfinding signage, not AI gradients.
+   Ink surfaces, one signal colour (amber) for "go / here", and two meaning colours from the hybrid story:
+   green = on this device (Gemini Nano), blue = cloud. Condensed signage display face for the wordmark,
+   IBM Plex for reading and for receipts. */
+@font-face { font-family: "WP Display"; src: url("/fonts/display-800.woff2") format("woff2"); font-weight: 800; font-display: swap; }
+@font-face { font-family: "WP Display"; src: url("/fonts/display-700.woff2") format("woff2"); font-weight: 700; font-display: swap; }
+@font-face { font-family: "WP Sans"; src: url("/fonts/sans-400.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "WP Sans"; src: url("/fonts/sans-500.woff2") format("woff2"); font-weight: 500; font-display: swap; }
+@font-face { font-family: "WP Sans"; src: url("/fonts/sans-600.woff2") format("woff2"); font-weight: 600; font-display: swap; }
+@font-face { font-family: "WP Mono"; src: url("/fonts/mono-400.woff2") format("woff2"); font-weight: 400; font-display: swap; }
+@font-face { font-family: "WP Mono"; src: url("/fonts/mono-500.woff2") format("woff2"); font-weight: 500; font-display: swap; }
+
+:root {
+  color-scheme: light dark;
+  --font-display: "WP Display", "Arial Narrow", sans-serif;
+  --font-sans: "WP Sans", system-ui, sans-serif;
+  --font-mono: "WP Mono", ui-monospace, monospace;
+  /* Light: paper, like a printed trail map */
+  --bg: #f4f1e8;
+  --surface: #fffdf7;
+  --surface-2: #ece7da;
+  --line: #ddd6c6;
+  --text: #141a17;
+  --muted: #5c6a63;
+  --signal: #ffb224;
+  --signal-ink: #1f1500;
+  --signal-text: #a86b00;
+  --device: #18a96a;
+  --cloud: #2f7fd6;
+  --danger: #d4472f;
+  --focus: #ffb224;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    /* Dark: signage at night */
+    --bg: #0c110f;
+    --surface: #121916;
+    --surface-2: #1a2420;
+    --line: #2b3833;
+    --text: #edf2ec;
+    --muted: #8fa39a;
+    --signal-text: #ffb224;
+    --device: #3ddc97;
+    --cloud: #74b7ff;
+    --danger: #ff6f59;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0c110f; --surface: #121916; --surface-2: #1a2420; --line: #2b3833; --text: #edf2ec; --muted: #8fa39a;
+  --signal-text: #ffb224; --device: #3ddc97; --cloud: #74b7ff; --danger: #ff6f59;
+}
+html, body { background: var(--bg); color: var(--text); font: 14px/1.5 var(--font-sans); margin: 0; }
+[hidden] { display: none !important; }
+:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+/* The wordmark: WAYP◎INT — the O is a waypoint target. */
+.wordmark { font: 800 22px/1 var(--font-display); letter-spacing: .16em; text-transform: uppercase; display: inline-flex; align-items: center; gap: .02em; color: var(--text); }
+.wordmark .o { width: .78em; height: .78em; display: inline-block; position: relative; margin: 0 .06em; }
+.wordmark .o::before { content: ""; position: absolute; inset: 0; border: .13em solid var(--signal); border-radius: 50%; }
+.wordmark .o::after { content: ""; position: absolute; inset: 34%; background: var(--signal); border-radius: 50%; }
+
+.kbd { font: 500 11px/1 var(--font-mono); padding: 3px 6px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 5px; color: var(--muted); background: var(--surface); }
+.dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
+.dot.device { background: var(--device); box-shadow: 0 0 0 3px color-mix(in srgb, var(--device) 22%, transparent); }
+.dot.cloud { background: var(--cloud); }
+.dot.signal { background: var(--signal); }
+.dot.off { background: transparent; border: 2px solid var(--muted); width: 6px; height: 6px; }
+button { font: inherit; cursor: pointer; }
+.btn { border: 0; border-radius: 9px; padding: 9px 16px; font-weight: 600; background: var(--signal); color: var(--signal-ink); }
+.btn:hover { filter: brightness(1.06); }
+.btn.ghost { background: transparent; color: var(--text); border: 1px solid var(--line); }
+.btn.ghost:hover { border-color: var(--muted); }

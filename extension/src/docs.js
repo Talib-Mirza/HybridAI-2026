@@ -39,7 +39,9 @@ export const cleanUrl = (u) => {
 
 export async function canFetch(url) {
   try {
-    return await chrome.permissions.contains({ origins: [originPattern(url)] });
+    // In the offscreen brain, permission checks go through the service worker.
+    const contains = globalThis.__wpPermContains || ((p) => chrome.permissions.contains(p));
+    return await contains({ origins: [originPattern(url)] });
   } catch {
     return false;
   }

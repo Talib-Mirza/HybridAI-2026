@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Waypoint",
   "version": "0.1.0",
-  "description": "An in-page guide for dense web apps and consoles. Gemini Nano finds the control on your page; cloud Gemini plans multi-page routes.",
+  "description": "Wayfinding for dense web apps: Gemini Nano finds what you need on the page, on your device; cloud Gemini plans routes across pages.",
   "minimum_chrome_version": "139",
   "permissions": [
     "sidePanel",
@@ -10,7 +10,8 @@
     "tabs",
     "storage",
     "contextMenus",
-    "activeTab"
+    "activeTab",
+    "offscreen"
   ],
   "host_permissions": [
     "https://console.firebase.google.com/*"
@@ -24,12 +25,18 @@
     "service_worker": "background.js"
   },
   "action": {
-    "default_title": "Open Waypoint"
+    "default_title": "Waypoint (Alt+Shift+W)"
   },
   "side_panel": {
     "default_path": "sidepanel.html"
   },
   "commands": {
+    "toggle-bar": {
+      "suggested_key": {
+        "default": "Alt+Shift+W"
+      },
+      "description": "Open or close the Waypoint bar"
+    },
     "start-pick": {
       "suggested_key": {
         "default": "Alt+Shift+P"
@@ -46,6 +53,16 @@
         "content.js"
       ],
       "run_at": "document_idle"
+    }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "fonts/*.woff2"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
     }
   ]
 }

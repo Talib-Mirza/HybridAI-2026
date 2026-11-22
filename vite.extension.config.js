@@ -19,7 +19,12 @@ export default defineConfig({
     minify: false,
     sourcemap: true,
     rollupOptions: {
-      input: { sidepanel: resolve(here, "extension/sidepanel.html") },
+      input: {
+        sidepanel: resolve(here, "extension/sidepanel.html"),
+        offscreen: resolve(here, "extension/offscreen.html"),
+        onboarding: resolve(here, "extension/onboarding.html"),
+        grant: resolve(here, "extension/grant.html"),
+      },
     },
   },
   plugins: [

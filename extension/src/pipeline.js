@@ -161,7 +161,13 @@ export function specificToGoal(goal, label, outline) {
   const topic = new Set(words(`${outline.title} ${outline.headings.join(" ")}`).map(stem));
   // The user's own words only: synonyms help find candidates, but aren't evidence ("add" ≈ "new" matched
   // "opens in new tab").
-  const goalStems = words(goal).map(stem).filter((st) => !topic.has(st));
+  // "…debug tokens for HybridAI-2026": the trailing "for/in/on X" is where it lives, not what to do, so
+  // "Open HybridAI-2026" is a step on the way, not the goal itself.
+  const core = goal.replace(/[?.!]+$/, "").replace(/\s+(?:for|in|on|within|inside|under|from)\s+(?:the\s+|my\s+|our\s+)?[^\s,]+(?:\s+(?:project|app|account|workspace|site|org))?$/i, "");
+  // "Open AudioLibrary" doesn't complete "delete the AudioLibrary project": opening is only the way in.
+  if (/^(?:open|go to|view)\b/i.test(label.trim()) && !/^(?:please\s+)?(?:open|go to|view|show|take me|where (?:is|are|do i find))\b/i.test(goal.trim())) return false;
+  const coreUse = words(core).filter((w) => !topic.has(stem(w))).length >= 2 ? core : goal;
+  const goalStems = words(coreUse).map(stem).filter((st) => !topic.has(st));
   const labelStems = new Set(words(label).map(stem));
   return goalStems.some((st) => labelStems.has(st));
 }

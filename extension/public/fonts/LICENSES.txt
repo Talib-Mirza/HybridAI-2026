@@ -1,0 +1,4 @@
+Fonts bundled with Waypoint, all under the SIL Open Font License 1.1 (https://openfontlicense.org):
+- Big Shoulders Display (display-*.woff2) — Copyright The Big Shoulders Project Authors
+- IBM Plex Sans (sans-*.woff2) and IBM Plex Mono (mono-*.woff2) — Copyright IBM Corp.
+Files taken from the @fontsource packages (latin subsets).
