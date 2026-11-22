@@ -564,11 +564,18 @@
       .pick-tag.pinned .unpin{display:inline}
       .pick-tag .unpin:hover,.pick-tag .unpin:focus-visible{background:var(--ink3);color:var(--text);outline:none}
       /* ---- the command bar ---- */
-      .bar{position:fixed;top:16px;left:50%;transform:translateX(-50%);width:min(680px,calc(100vw - 32px));display:none;flex-direction:column;gap:12px;background:var(--ink1);color:var(--text);font:14px/1.45 var(--sans);border:1px solid var(--line);border-radius:16px;padding:14px 16px 14px;box-shadow:0 24px 70px rgba(0,0,0,.5),0 0 0 1px rgba(0,0,0,.4);pointer-events:auto;animation:drop .18s cubic-bezier(.2,.8,.2,1)}
+      @keyframes bardrop{from{opacity:0;translate:0 -10px}to{opacity:1;translate:0 0}}
+      .bar{position:fixed;top:16px;left:calc(50% - 238px);width:min(476px,calc(100vw - 32px));transform-origin:0 0;display:none;flex-direction:column;gap:12px;background:var(--ink1);color:var(--text);font:14px/1.45 var(--sans);border:1px solid var(--line);border-radius:16px;padding:14px 16px 14px;box-shadow:0 24px 70px rgba(0,0,0,.5),0 0 0 1px rgba(0,0,0,.4);pointer-events:auto;animation:bardrop .18s cubic-bezier(.2,.8,.2,1)}
       .bar.open{display:flex}
+      .bar.moving{animation:none;user-select:none}
+      .bar-head{cursor:grab} .bar.moving .bar-head{cursor:grabbing}
+      .bar-head button{cursor:pointer}
+      .grip{position:absolute;right:3px;bottom:3px;width:16px;height:16px;cursor:nwse-resize;color:var(--muted);opacity:.55;display:grid;place-items:center;border-radius:4px;touch-action:none}
+      .grip:hover,.bar.moving .grip{opacity:1;color:var(--signal)}
+      .grip svg{width:11px;height:11px}
       .bar::before{content:"";position:absolute;left:18px;right:18px;top:0;height:2px;background:repeating-linear-gradient(90deg,var(--signal) 0 10px,transparent 10px 18px);border-radius:2px;opacity:.9}
       .bar-head{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:10px}
-      .wordmark{font:800 24px/1 var(--display);letter-spacing:.2em;display:inline-flex;align-items:center;justify-self:center;color:var(--text);user-select:none;padding-left:.2em}
+      .wordmark{font:800 22px/1 var(--display);letter-spacing:.2em;display:inline-flex;align-items:center;justify-self:center;color:var(--text);user-select:none;padding-left:.2em}
       .wordmark .o{width:.74em;height:.74em;position:relative;margin:0 .07em 0 .03em;display:inline-block}
       .wordmark .o::before{content:"";position:absolute;inset:0;border:.13em solid var(--signal);border-radius:50%}
       .wordmark .o::after{content:"";position:absolute;inset:33%;background:var(--signal);border-radius:50%}
@@ -578,7 +585,7 @@
       .nano.ready .dot{background:var(--device);box-shadow:0 0 0 3px rgba(61,220,151,.18)}
       .nano.warn{color:var(--signal)} .nano.warn .dot{background:var(--signal)}
       .head-right{justify-self:end;display:flex;align-items:center;gap:4px}
-      .site{display:inline-flex;align-items:center;gap:8px;background:none;border:1px solid var(--line);border-radius:999px;padding:3px 4px 3px 10px;font:500 11.5px var(--mono);color:var(--muted);cursor:pointer;max-width:200px}
+      .site{display:inline-flex;align-items:center;gap:7px;background:none;border:1px solid var(--line);border-radius:999px;padding:3px 4px 3px 9px;font:500 11px var(--mono);color:var(--muted);cursor:pointer;max-width:130px}
       .site .site-host{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
       .site .sw{width:28px;height:16px;border-radius:999px;background:var(--ink3);position:relative;flex:none;transition:background .15s}
       .site .knob{position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:var(--muted);transition:transform .15s,background .15s}
@@ -702,6 +709,7 @@
         <button class="go" type="button" disabled>Go <span class="kbd">↵</span></button>
       </div>
       <div class="bar-foot"><div class="bstatus" role="status" aria-live="polite"></div><div class="suggest"></div></div>
+      <div class="grip" title="Drag to make Waypoint bigger or smaller · double-click the top bar to reset" aria-hidden="true"><svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M11 4L4 11M11 8L8 11"/></svg></div>
     </div>
     <div class="mini" role="status" aria-live="polite">
       <span class="mini-o" aria-hidden="true"></span><span class="mini-text"></span>
@@ -1579,12 +1587,83 @@
   ];
   let phIdx = 0;
 
+  // ---- Move and scale: drag the header, pull the corner grip; remembered on every site ----
+  let barPos = null; // top-left in px; null = centred at the top
+  let barScale = 1;
+  try {
+    chrome.storage.local.get("waypointBar").then(({ waypointBar: b } = {}) => {
+      if (!b) return;
+      barPos = b.pos || null;
+      barScale = b.scale || 1;
+      if (barOpen()) placeBar();
+    }).catch(() => {});
+  } catch {}
+  const saveBar = () => { try { chrome.storage.local.set({ waypointBar: { pos: barPos, scale: barScale } }).catch(() => {}); } catch {} };
+  function placeBar() {
+    barEl.style.scale = String(barScale);
+    const w = barEl.offsetWidth * barScale;
+    let x = barPos ? barPos.x : (innerWidth - w) / 2;
+    let y = barPos ? barPos.y : 16;
+    // Keep enough of it on screen to grab it again.
+    x = Math.min(Math.max(x, 120 - w), innerWidth - 120);
+    y = Math.min(Math.max(y, 4), innerHeight - 56);
+    barEl.style.left = `${x}px`;
+    barEl.style.top = `${y}px`;
+  }
+  function dragWith(e, onMove) {
+    e.preventDefault();
+    barEl.classList.add("moving");
+    const target = e.currentTarget;
+    target.setPointerCapture?.(e.pointerId);
+    const move = (ev) => onMove(ev);
+    const up = () => {
+      barEl.classList.remove("moving");
+      target.removeEventListener("pointermove", move);
+      target.removeEventListener("pointerup", up);
+      target.removeEventListener("pointercancel", up);
+      saveBar();
+    };
+    target.addEventListener("pointermove", move);
+    target.addEventListener("pointerup", up);
+    target.addEventListener("pointercancel", up);
+  }
+  b$(".bar-head").addEventListener("pointerdown", (e) => {
+    if (e.button !== 0 || e.target.closest("button")) return;
+    const r = barEl.getBoundingClientRect();
+    const dx = e.clientX - r.left, dy = e.clientY - r.top;
+    dragWith(e, (ev) => {
+      barPos = { x: ev.clientX - dx, y: ev.clientY - dy };
+      placeBar();
+    });
+  });
+  b$(".grip").addEventListener("pointerdown", (e) => {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    const r = barEl.getBoundingClientRect();
+    const startScale = barScale, startW = r.width;
+    barPos = { x: r.left, y: r.top }; // scaling grows from the top-left corner
+    dragWith(e, (ev) => {
+      barScale = Math.min(1.4, Math.max(0.75, (startScale * Math.max(80, ev.clientX - r.left)) / startW));
+      placeBar();
+    });
+  });
+  // Double-click the header (the drag handle): back to the middle, normal size.
+  b$(".bar-head").addEventListener("dblclick", (e) => {
+    if (e.target.closest?.("button")) return;
+    barPos = null;
+    barScale = 1;
+    placeBar();
+    saveBar();
+  });
+  addEventListener("resize", () => barOpen() && placeBar());
+
   async function openBar({ focus = true } = {}) {
     barUsed = true;
     showPins(true);
     raise();
     miniEl.classList.remove("open");
     barEl.classList.add("open");
+    placeBar();
     qEl.placeholder = PLACEHOLDERS[phIdx++ % PLACEHOLDERS.length];
     if (focus) setTimeout(() => qEl.focus(), 30);
     toSW({ type: "ensure-brain" });
@@ -1611,14 +1690,14 @@
     const n = snap?.nano || { state: "checking", text: "Checking Nano…" };
     const btn = b$(".nano");
     btn.className = `nano ${n.state === "ready" ? "ready" : n.state === "checking" || n.state === "warming" ? "" : "warn"}`;
-    b$(".nano-text").textContent = n.state === "ready" ? `Nano on-device${n.vision ? " · vision" : ""}` : n.state === "warming" ? "Waking Nano…" : n.state === "checking" ? "Checking Nano…" : "Set up Gemini Nano";
-    btn.title = n.text || "";
+    b$(".nano-text").textContent = n.state === "ready" ? "Nano" : n.state === "warming" ? "Waking…" : n.state === "checking" ? "Checking…" : "Set up Nano";
+    btn.title = n.state === "ready" ? `Gemini Nano is running on this device${n.vision ? ", and can look at charts and icons" : ""}` : n.text || "";
   }
   function renderSite() {
     const el = b$(".site");
     el.hidden = !site?.web;
     if (!site?.web) return;
-    b$(".site-host").textContent = site.host.replace(/^www\./, "").split(".").slice(-3).join("."); // console.firebase.google.com → firebase.google.com
+    b$(".site-host").textContent = "This site"; // the host is in the tooltip; the bar is too narrow for it
     const on = site.allowed || site.all;
     el.setAttribute("aria-checked", String(!!on));
     el.title = site.all ? "On for every site (Settings to change)" : on ? `On for ${site.host}. Click to turn off.` : `Off for ${site.host}: click to keep Waypoint on here`;
