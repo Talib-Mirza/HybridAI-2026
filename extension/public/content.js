@@ -450,6 +450,7 @@
   const shadow = host.attachShadow({ mode: "open" });
   shadow.innerHTML = `
     <style>
+      [hidden]{display:none !important}
       :host{all:initial}
       /* Waypoint theme: wayfinding signage. Ink surfaces, amber = "here / go", green = on this device,
          blue = cloud. Condensed signage face for the wordmark, IBM Plex for reading. */
@@ -496,7 +497,7 @@
       .btn{font:600 12.5px var(--sans);border:0;border-radius:7px;padding:5px 11px;cursor:pointer;background:var(--signal);color:var(--signal-ink)}
       .btn:hover{filter:brightness(1.07)}
       .btn.ghost{background:transparent;color:var(--text);border:1px solid var(--line)}
-      .btn:focus-visible,.tool:focus-visible,.icon:focus-visible,.site:focus-visible,.nano:focus-visible,.go:focus-visible{outline:2px solid var(--signal);outline-offset:2px}
+      .btn:focus-visible,.tool:focus-visible,.icon:focus-visible,.nano:focus-visible,.go:focus-visible{outline:2px solid var(--signal);outline-offset:2px}
       .arrow{position:absolute;width:12px;height:12px;background:var(--ink1);border-left:1px solid var(--line);border-top:1px solid var(--line);transform:rotate(45deg)}
       .arrow[style*="bottom"]{border:0;border-right:1px solid var(--line);border-bottom:1px solid var(--line)}
       .arrow[style*="left: -6px"]{border:0;border-left:1px solid var(--line);border-bottom:1px solid var(--line)}
@@ -585,13 +586,17 @@
       .nano.ready .dot{background:var(--device);box-shadow:0 0 0 3px rgba(61,220,151,.18)}
       .nano.warn{color:var(--signal)} .nano.warn .dot{background:var(--signal)}
       .head-right{justify-self:end;display:flex;align-items:center;gap:4px}
-      .site{display:inline-flex;align-items:center;gap:7px;background:none;border:1px solid var(--line);border-radius:999px;padding:3px 4px 3px 9px;font:500 11px var(--mono);color:var(--muted);cursor:pointer;max-width:130px}
-      .site .site-host{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-      .site .sw{width:28px;height:16px;border-radius:999px;background:var(--ink3);position:relative;flex:none;transition:background .15s}
-      .site .knob{position:absolute;top:2px;left:2px;width:12px;height:12px;border-radius:50%;background:var(--muted);transition:transform .15s,background .15s}
-      .site[aria-checked="true"]{color:var(--text)}
-      .site[aria-checked="true"] .sw{background:rgba(61,220,151,.3)}
-      .site[aria-checked="true"] .knob{transform:translateX(12px);background:var(--device)}
+      .warnwrap{position:relative;display:inline-flex}
+      .sitewarn{color:var(--signal)}
+      .sitewarn:hover{background:rgba(255,178,36,.14);color:var(--signal)}
+      .sitewarn svg{width:18px;height:18px}
+      .tip{display:none;position:absolute;top:calc(100% + 8px);right:-36px;width:240px;background:var(--ink0);color:var(--text);border:1px solid rgba(255,178,36,.5);border-radius:10px;padding:9px 11px;font:12.5px/1.45 var(--sans);box-shadow:0 12px 30px rgba(0,0,0,.45);z-index:3;cursor:default}
+      .tip b{color:var(--signal);font-weight:600}
+      .tip .tip-act{display:block;margin-top:5px;color:var(--muted);font:11px var(--mono)}
+      .warnwrap:hover .tip,.sitewarn:focus-visible + .tip{display:block}
+      .menu .row:disabled{cursor:default;opacity:.65} .menu .row:disabled:hover{background:none}
+      .menu .row.attn{background:rgba(255,178,36,.12);box-shadow:inset 0 0 0 1px rgba(255,178,36,.55)}
+      .menu .row .hint.on{color:var(--device)}
       .icon{width:30px;height:30px;display:inline-grid;place-items:center;background:none;border:0;border-radius:8px;color:var(--muted);cursor:pointer}
       .icon:hover,.icon[aria-expanded="true"]{background:var(--ink3);color:var(--text)}
       .icon svg{width:17px;height:17px}
@@ -686,12 +691,13 @@
         <button class="nano" type="button" title="Gemini Nano on this device"><span class="dot"></span><span class="nano-text">Checking Nano…</span></button>
         <div class="wordmark" aria-label="Waypoint">WAYP<span class="o" aria-hidden="true"></span>INT</div>
         <div class="head-right">
-          <button class="site" type="button" role="switch" aria-checked="false" title="Waypoint on this site"><span class="site-host"></span><span class="sw"><span class="knob"></span></span></button>
+          <span class="warnwrap" hidden><button class="icon sitewarn" type="button" aria-describedby="wp-site-tip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10.3 3.9 1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></svg></button><span class="tip" id="wp-site-tip" role="tooltip"></span></span>
           <button class="icon gear" type="button" aria-label="Settings" aria-expanded="false" title="Settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg></button>
           <button class="icon close" type="button" aria-label="Close (Esc)" title="Close (Esc)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button>
         </div>
       </div>
       <div class="menu" role="menu">
+        <button class="row m-site" role="menuitemcheckbox" aria-checked="false"><span class="m-site-text">On for this site</span> <span class="sw"><span class="knob"></span></span></button>
         <button class="row m-cloud" role="menuitemcheckbox" aria-checked="false">Cloud only <span class="sw"><span class="knob"></span></span></button>
         <button class="row m-all" role="menuitemcheckbox" aria-checked="false">On for every site <span class="sw"><span class="knob"></span></span></button>
         <button class="row m-trace" role="menuitem">Open Trace (what ran where) <span class="hint">side panel</span></button>
@@ -1693,15 +1699,33 @@
     b$(".nano-text").textContent = n.state === "ready" ? "Nano" : n.state === "warming" ? "Waking…" : n.state === "checking" ? "Checking…" : "Set up Nano";
     btn.title = n.state === "ready" ? `Gemini Nano is running on this device${n.vision ? ", and can look at charts and icons" : ""}` : n.text || "";
   }
+  /**
+   * Site access lives in Settings. The bar only speaks up when this site isn't kept on: a small warning
+   * whose tooltip explains, and a click opens Settings at the switch.
+   */
   function renderSite() {
-    const el = b$(".site");
-    el.hidden = !site?.web;
-    if (!site?.web) return;
-    b$(".site-host").textContent = "This site"; // the host is in the tooltip; the bar is too narrow for it
-    const on = site.allowed || site.all;
-    el.setAttribute("aria-checked", String(!!on));
-    el.title = site.all ? "On for every site (Settings to change)" : on ? `On for ${site.host}. Click to turn off.` : `Off for ${site.host}: click to keep Waypoint on here`;
-    b$(".m-all").setAttribute("aria-checked", String(!!site.all));
+    const web = !!site?.web;
+    const on = web && (site.allowed || site.all);
+    b$(".warnwrap").hidden = !web || on;
+    if (web && !on) {
+      const tip = b$(".tip");
+      const b = document.createElement("b");
+      b.textContent = "Not kept on for this site.";
+      const act = document.createElement("span");
+      act.className = "tip-act";
+      act.textContent = "Click to turn it on in Settings";
+      tip.replaceChildren(b, " Waypoint works here now because you opened it, but it won't be ready here next time.", act);
+      b$(".sitewarn").setAttribute("aria-label", `Waypoint isn't kept on for ${site.host}. Open settings.`);
+    }
+    const row = b$(".m-site");
+    row.hidden = !web;
+    if (web) {
+      b$(".m-site-text").textContent = site.all ? "On for this site (every site is on)" : `On for ${site.host.replace(/^www\./, "")}`;
+      row.setAttribute("aria-checked", String(!!on));
+      row.disabled = !!site.all || !!site.builtIn;
+      row.title = site.builtIn ? "Waypoint is always on here." : site.all ? "Turn off “On for every site” to choose per site." : "";
+    }
+    b$(".m-all").setAttribute("aria-checked", String(!!site?.all));
   }
   /** The picks, as numbered chips matching the outlines on the page; × removes one, + adds more. */
   function renderChip() {
@@ -1873,13 +1897,18 @@
       renderSite();
     } else toSW({ type: "grant", origins: ["<all_urls>"], text: "Use Waypoint on any site you visit, and let Nano see charts and icons you pick (screenshots stay on your device)." });
   });
-  b$(".site").addEventListener("click", async () => {
-    if (!site?.web) return;
-    if (site.all) {
-      b$(".menu").classList.add("open");
-      return;
-    }
-    if (site.allowed && !site.builtIn) {
+  b$(".sitewarn").addEventListener("click", () => {
+    // Open Settings with the switch picked out.
+    b$(".menu").classList.add("open");
+    b$(".gear").setAttribute("aria-expanded", "true");
+    const row = b$(".m-site");
+    row.classList.add("attn");
+    row.focus();
+    setTimeout(() => row.classList.remove("attn"), 1800);
+  });
+  b$(".m-site").addEventListener("click", async () => {
+    if (!site?.web || site.all || site.builtIn) return;
+    if (site.allowed) {
       await toSW({ type: "site-off", pattern: site.pattern });
       site = await toSW({ type: "site-info", url: location.href });
       renderSite();
