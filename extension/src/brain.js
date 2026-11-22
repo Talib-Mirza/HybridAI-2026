@@ -4,7 +4,7 @@
 // side panel. Offscreen documents can only use chrome.runtime, so tabs / scripting / permissions calls go
 // through the service worker (see background.js, "router").
 import { docLookup, clearDocsCache } from "./docs.js";
-import { pickElement, planRoute, hasKeywordHit, exactMatch, closeMatch, kindFits, alreadyHere, looksDone, specificToGoal, namesNavTarget, navTarget, looksLikeExplain, pickTour, explainControl, chooseMode, readDocs, suggestDocs, answerAboutElement } from "./pipeline.js";
+import { pickElement, planRoute, hasKeywordHit, exactMatch, closeMatch, kindFits, alreadyHere, looksDone, specificToGoal, arrivedAt, namesNavTarget, navTarget, looksLikeExplain, pickTour, explainControl, chooseMode, readDocs, suggestDocs, answerAboutElement } from "./pipeline.js";
 
 // ---------- chrome.* through the service worker ----------
 const rpc = (method, ...args) =>
@@ -429,7 +429,14 @@ async function runStep(gen, attempt, run) {
     const outline = await send(state.tabId, { type: "outline" });
     if (stale()) return;
     if (await sweepDone(outline)) return;
-    if (!specificToGoal(state.goal, last, outline) && state.replans < MAX_AUTO_REPLANS) {
+    // …unless the page is now the place the last step named (it was a destination, not a detour).
+    // Only for destinations (a navigation link, "View all products"); a plan that ends on a tab or a menu may
+    // still be short of the goal.
+    const lastStep = state.steps[state.steps.length - 1] || {};
+    const destination = lastStep.kind === "navigation" || /^(?:view|open|go to|see|browse|visit)\b/i.test(last);
+    const arrived = destination && arrivedAt(last, outline);
+    if (arrived) log({ kind: "info", title: `Arrived at "${last}"`, detail: "The page now shows where the last step leads, so the route is complete. No AI call." });
+    if (!arrived && !specificToGoal(state.goal, last, outline) && state.replans < MAX_AUTO_REPLANS) {
       state.replans += 1;
       await escalate(state.goal, outline, gen, { unfinished: true });
       return;

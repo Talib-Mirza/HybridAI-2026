@@ -143,6 +143,17 @@ export function alreadyHere(target, items) {
 }
 
 /**
+ * Did the last step land where it said? "View all products" → the page now has "All products" as its
+ * selected nav item, heading or title. Then the plan's destination is reached, whatever the goal's wording.
+ */
+export function arrivedAt(target, outline) {
+  const dest = norm(target).replace(/^(?:view|open|go to|see|show|browse|select|click|visit)\s+/, "").trim();
+  if (dest.split(" ").length < 1 || dest.length < 3) return false;
+  if (alreadyHere(dest, outline.items)) return true;
+  return [outline.title, ...(outline.headings || [])].some((h) => ` ${norm(h)} `.includes(` ${dest} `));
+}
+
+/**
  * No-AI "already done" check: the matched control's status shows the goal's action in the past tense
  * (goal "enforce …" and a row reading "Enforced", "enable" → "Enabled"). Negated forms don't count.
  */
