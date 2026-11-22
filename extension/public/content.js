@@ -525,6 +525,8 @@
       .pick-tag .name{overflow:hidden;text-overflow:ellipsis}
       .pick-tag .eye{flex:none;color:var(--signal);font-size:11px}
       .pick-tag .unpin{display:none;flex:none;background:none;border:0;color:var(--muted);cursor:pointer;font:15px/1 var(--sans);padding:0 3px;border-radius:4px}
+      .bubble .text,.bubble .title,.bubble .why{user-select:text;-webkit-user-select:text;cursor:text}
+      .bubble ::selection{background:rgba(255,178,36,.35);color:var(--text)}
       .pick-tag .pstate{flex:none;font:500 10.5px var(--mono);color:var(--muted)}
       .pick-tag.is-pinned{border-color:var(--signal)} .pick-tag.is-pinned .pstate{color:var(--signal)}
       .pin{position:fixed;border:2px solid var(--device);background:rgba(61,220,151,.06);border-radius:7px;box-shadow:0 0 0 4px rgba(61,220,151,.16);pointer-events:none}
@@ -534,6 +536,12 @@
       .pin-tag .name{overflow:hidden;text-overflow:ellipsis;min-width:0}
       .pin-tag .unpin{flex:none;background:none;border:0;color:var(--muted);cursor:pointer;font:15px/1 var(--sans);padding:0 4px;border-radius:4px}
       .pin-tag .unpin:hover,.pin-tag .unpin:focus-visible{background:var(--ink3);color:var(--text);outline:none}
+      .pin-tag.compact{padding:2px;gap:5px;border-radius:7px}
+      .pin-tag.compact .kind,.pin-tag.compact .name,.pin-tag.compact .unpin{display:none}
+      .pin-tag.compact:hover,.pin-tag.compact:focus-within{padding:2px 2px 2px 2px;z-index:2}
+      .pin-tag.compact:hover .kind,.pin-tag.compact:hover .name,.pin-tag.compact:focus-within .kind,.pin-tag.compact:focus-within .name{display:inline}
+      .pin-tag.compact:hover .unpin,.pin-tag.compact:focus-within .unpin{display:inline-block}
+      .pin.hot{border-color:var(--signal);box-shadow:0 0 0 4px rgba(255,178,36,.22)}
       .pickbar{position:fixed;top:12px;left:50%;transform:translateX(-50%);display:none;align-items:center;gap:8px;max-width:calc(100vw - 24px);background:var(--ink1);color:var(--text);border:1px solid rgba(61,220,151,.55);border-radius:999px;padding:5px 6px 5px 12px;font:13px/1.3 var(--sans);box-shadow:0 10px 30px rgba(0,0,0,.4);pointer-events:auto;animation:drop .16s ease-out}
       .pickbar.open{display:flex}
       .pickbar .pb-dot{width:9px;height:9px;border-radius:50%;background:var(--device);flex:none;animation:pulse 1.2s ease-in-out infinite}
@@ -711,7 +719,11 @@
   // navigation drawer). Pressing our buttons also mustn't move focus away from the page.
   for (const type of ["pointerdown", "mousedown", "pointerup", "mouseup", "click", "touchstart", "touchend"]) {
     host.addEventListener(type, (e) => {
-      if (type === "pointerdown" || type === "mousedown") e.preventDefault();
+      // Text stays selectable (answers, the question box); only our buttons skip the default, so
+      // pressing them doesn't move focus off the page.
+      const t = e.composedPath()[0];
+      const isText = t?.closest?.(".text,.title,.why,.loading-text,.q,.bstatus,.scroll-text,textarea,input");
+      if ((type === "pointerdown" || type === "mousedown") && !isText) e.preventDefault();
       e.stopPropagation();
     });
   }
@@ -1301,6 +1313,8 @@
     tag.querySelector(".unpin").setAttribute("aria-label", `Remove ${name}`);
     tag.querySelector(".unpin").title = "Remove";
     tag.querySelector(".unpin").addEventListener("click", () => removePin(key, true));
+    tag.addEventListener("mouseenter", () => box.classList.add("hot"));
+    tag.addEventListener("mouseleave", () => box.classList.remove("hot"));
     pinsLayer.append(box, tag);
     pins.push({ el, key, box, tag });
     raise();
@@ -1341,7 +1355,11 @@
       p.tag.style.display = off || (picking && hoverChain[hoverLevel] === p.el) ? "none" : "";
       if (off) continue;
       Object.assign(p.box.style, { left: `${r.left - 2}px`, top: `${r.top - 2}px`, width: `${r.width + 4}px`, height: `${r.height + 4}px` });
-      const t = tagSpot(r, p.tag.offsetWidth);
+      // One pick gets a full label above it; several get a numbered badge on the corner (name and × on
+      // hover), so stacked rows don't bury each other under labels.
+      const compact = pins.length > 1;
+      p.tag.classList.toggle("compact", compact);
+      const t = compact ? { left: Math.max(4, r.left - 8), top: Math.max(4, r.top - 10) } : tagSpot(r, p.tag.offsetWidth);
       Object.assign(p.tag.style, { left: `${t.left}px`, top: `${t.top}px` });
     }
   }

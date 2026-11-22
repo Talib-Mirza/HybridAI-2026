@@ -506,6 +506,20 @@ Choose the controls whose explanation answers the request, in a sensible tour or
  * row cells, card text) only ever goes to on-device Nano; if Nano isn't available the cloud gets just the
  * control's label, type and state.
  */
+/** Nano occasionally drifts into another language (seen: Spanish). Common-word check, English vs not. */
+const EN = /\b(the|is|are|and|this|that|with|for|your|it|of|to|in|on|can|will)\b/gi;
+const NOT_EN = /\b(los|las|el|la|que|para|estos|esta|una|con|del|por|est|der|die|und|das|ist|les|des|est|une|pour|dans)\b/gi;
+export function looksEnglish(t) {
+  const en = (t.match(EN) || []).length, other = (t.match(NOT_EN) || []).length;
+  return t.trim().length < 40 || en >= other;
+}
+/** Run on-device; if the answer isn't English, ask once more, firmly. */
+async function inEnglish(run, ...args) {
+  const r = await run(...args);
+  if (looksEnglish(r.text)) return r;
+  args[1] = `${args[1]}\n\nIMPORTANT: your answer must be in English.`;
+  return run(...args);
+}
 /** Nano sometimes echoes the privacy placeholders; turn them back into natural wording for the reader. */
 const unplaceholder = (t) =>
   t
@@ -513,7 +527,8 @@ const unplaceholder = (t) =>
     .replace(/(?:your |the )?\[(?:your )?project\]/gi, "your project")
     .replace(/\[email\]/gi, "the email address")
     .replace(/\[name\]/gi, "the account holder")
-    .replace(/\[(?:number|uuid|token|api-key|app-id)\]/gi, "the ID");
+    .replace(/\[(?:number|uuid|token|api-key|app-id)\]/gi, "the ID")
+    .replace(/(^|[.!?]\s+)(your|the) /g, (_, a, w) => a + w[0].toUpperCase() + w.slice(1) + " ");
 
 export async function explainControl({ question, outline, item, detail = {}, docs = "", onText }) {
   const base = `You are Waypoint, explaining a web app's UI to a developer.
@@ -531,7 +546,7 @@ ${item.anchorLabel ? "Explain this term shown on the page (a column, status or s
     : "";
   const rules = `
 
-Explain "${item.label}" only, even if the question mentions other things: other popups cover those. Write 1 or 2 short sentences, at most ${docs ? 55 : 40} words: what it does and when or why someone would use it${docs ? ", grounded in the documentation above (a key detail, limit or trade-off it states is worth including)" : ""}. If it's a setting, status or table row, say what its current state or values mean. Start with a verb or the point itself (e.g. "Opens…", "Shows…", "Requires…"), not with the control's name. Be direct and confident; only hedge if the page gives no clue at all. Text in [brackets] was redacted for privacy: refer to it generically ("your project", "this app"). Plain text only, no markdown.`;
+Explain "${item.label}" only, even if the question mentions other things: other popups cover those. Write 1 or 2 short sentences, at most ${docs ? 55 : 40} words: what it does and when or why someone would use it${docs ? ", grounded in the documentation above (a key detail, limit or trade-off it states is worth including)" : ""}. If it's a setting, status or table row, say what its current state or values mean. Start with a verb or the point itself (e.g. "Opens…", "Shows…", "Requires…"), not with the control's name. Be direct and confident; only hedge if the page gives no clue at all. Text in [brackets] was redacted for privacy: refer to it generically ("your project", "this app"). Write in English. Plain text only, no markdown.`;
 
   const run = async (mode, prompt) => {
     const model = getGenerativeModel(
@@ -561,7 +576,7 @@ Explain "${item.label}" only, even if the question mentions other things: other 
   };
 
   try {
-    return await run(InferenceMode.ONLY_ON_DEVICE, local + docsBlock + rules);
+    return await inEnglish(run, InferenceMode.ONLY_ON_DEVICE, local + docsBlock + rules);
   } catch (e) {
     console.warn("[Waypoint] on-device explanation unavailable, using cloud with less context:", e?.message);
     return await run(InferenceMode.ONLY_IN_CLOUD, base + docsBlock + rules);
@@ -737,7 +752,7 @@ ${
     multi
       ? `Answer in at most 5 short sentences (90 words), about these elements together: compare or connect them when the question asks, and name each one you mention (use #numbers only if names repeat). Use their states and values${shots.length ? " and what the screenshots show" : ""}.`
       : `Answer in at most 3 short sentences (60 words), specific to this element: use its state, values${shots.length ? " and what the screenshot shows" : ""}.`
-  } If it's a setting, say what changing it would do. Text in [brackets] was redacted: refer to it generically ("your project"). Plain text only. If something isn't visible or documented, say so briefly instead of guessing.`;
+  } If it's a setting, say what changing it would do. Text in [brackets] was redacted: refer to it generically ("your project"). Write in English. Plain text only. If something isn't visible or documented, say so briefly instead of guessing.`;
   const image0 = shots[0] || null;
   const run = async (mode, prompt, withImage) => {
     const model = getGenerativeModel(
@@ -775,12 +790,12 @@ ${
   };
 
   try {
-    return await run(InferenceMode.ONLY_ON_DEVICE, local + tail, !!image0);
+    return await inEnglish(run, InferenceMode.ONLY_ON_DEVICE, local + tail, !!image0);
   } catch (e) {
     if (image0) {
       // Nano is here but can't take images (e.g. multimodal not enabled): still answer on-device from text.
       try {
-        return await run(InferenceMode.ONLY_ON_DEVICE, local + tail, false);
+        return await inEnglish(run, InferenceMode.ONLY_ON_DEVICE, local + tail, false);
       } catch {}
     }
     console.warn("[Waypoint] on-device answer unavailable, using cloud with less context:", e?.message);
