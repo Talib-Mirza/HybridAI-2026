@@ -631,7 +631,7 @@ async function explain(question, tabId) {
     log({
       kind: pick.source === "in_cloud" ? "in_cloud" : pick.source === "on_device" ? "on_device" : "info",
       title: `Tour: ${pick.items.length} control${pick.items.length === 1 ? "" : "s"} to explain`,
-      detail: `${pick.items.map((it) => it.label).join(" · ")} · ${pick.byOrder ? "the page's main controls in reading order, no AI call" : pick.byName ? "named in the question, no AI call" : SOURCE_LABEL[pick.source] || pick.source}`,
+      detail: `${pick.items.map((it) => it.label).join(" · ")} · ${pick.byOrder ? "the page's main controls in reading order, no AI call" : pick.byName ? "named in the question, no AI call" : pick.byGroup ? `every ${pick.byGroup === "table" ? "row and column of the table" : pick.byGroup.replace(/s$/, "")} on the page, no AI call` : SOURCE_LABEL[pick.source] || pick.source}`,
       sent: pick.sent,
       ms: pick.ms,
     });

@@ -414,6 +414,19 @@ const TOUR_GENERIC = new Set(
 const DOC_LINK = /\b(learn more|view docs?|documentation|release notes)\b|opens? (in )?(a )?new (tab|window)|\bexternal\b/i;
 const aboutWholePage = (q) => /\b(this|the|current)\s+(page|screen|view)\b|\bhere\b|\bon (this|the) page\b/i.test(q);
 
+// Collective words → which outline items belong to the group. Columns are the help icons in a header row.
+const FIELD_ROLES = /^(switch|checkbox|textbox|combobox|radio|spinbutton|slider|searchbox|listbox)$/;
+const isColumn = (it) => !!it.anchorLabel && /\brow "/.test(it.context || "");
+const GROUPS = [
+  { name: "rows", re: /\brows\b|\bentries\b|\beach (?:row|entry|item)\b|\bthe items\b/i, test: (it) => it.role === "row" },
+  { name: "columns", re: /\bcolumns\b|\bcolumn headers?\b/i, test: isColumn },
+  { name: "table", re: /\b(this|the|that) table\b|\btable(?:'s)? (?:show|mean|contain)/i, test: (it) => it.role === "row" || isColumn(it) },
+  { name: "tabs", re: /\btabs\b/i, test: (it) => it.role === "tab" },
+  { name: "switches", re: /\b(switch(?:es)?|toggles|checkboxes)\b/i, test: (it) => /^(switch|checkbox)$/.test(it.role) },
+  { name: "settings", re: /\b(these|the|all|those|this page's) (settings|options|fields)\b|\bthe form\b/i, test: (it) => FIELD_ROLES.test(it.role) },
+];
+const groupOf = (q) => GROUPS.find((g) => g.re.test(q)) || null;
+
 // The ⓘ next to a column or setting ("Learn more about verified requests") is the best anchor for
 // explaining that term: tour it as the term itself, not as a docs link.
 const HELP_FOR = /^(?:learn more about|more info(?:rmation)? (?:about|on)|help (?:for|with|on)|info(?:rmation)? about|about|what (?:is|are))\s+(?:the\s+)?(.{3,60}?)[.?]?$/i;
@@ -450,6 +463,14 @@ export async function pickTour({ question, outline, max = 20 }) {
     const q = ` ${question.toLowerCase().replace(/[^a-z0-9]+/g, " ")} `;
     const named = visible.filter(({ it }) => it.anchorLabel && q.includes(` ${it.label.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()} `));
     if (named.length === 1) return { items: [named[0].it], source: "none", ms: 0, sent: "", byName: true };
+  }
+  // A question about a group ("what do the rows in this table mean", "explain these tabs") is about every
+  // member of it: take them straight from the page, in order, no model needed.
+  const group = groupOf(question);
+  if (group) {
+    const inMain = visible.filter(({ it }) => it.main || !/navigation/.test(it.context));
+    const members = inMain.filter(({ it }) => group.test(it)).map((x) => x.it);
+    if (members.length >= 2) return { items: members.slice(0, max), source: "none", ms: 0, sent: "", byGroup: group.name };
   }
   // Keyword matches first, then page content over navigation chrome; keep the top 40 in page order.
   const cands = visible
@@ -491,7 +512,7 @@ The user wants an explanation: "${question}"
 Controls on this page (id | role | label | context | state):
 ${compactLines(cands).join("\n")}
 
-Choose the controls whose explanation answers the request, in a sensible tour order. If they ask about one specific thing, choose just that one. If they ask about the whole page or a section, choose its meaningful content: settings, switches, tabs, table rows, key action buttons, at most ${max}. Skip site navigation and generic chrome (account menu, help, search, notifications, feedback, "learn more" links) unless asked. A "help icon for this term" stands for that term (a column, status or setting): when the user asks what a term means, choose its help icon rather than a nearby tab or button.`;
+Choose the controls whose explanation answers the request, in a sensible tour order. If they ask about one specific thing, choose just that one. If they ask about a group (rows, tabs, settings, a table), choose every member of it. If they ask about the whole page or a section, choose its meaningful content: settings, switches, tabs, table rows, key action buttons, at most ${max}. Skip site navigation and generic chrome (account menu, help, search, notifications, feedback, "learn more" links) unless asked. A "help icon for this term" stands for that term (a column, status or setting): when the user asks what a term means, choose its help icon rather than a nearby tab or button.`;
   const t0 = performance.now();
   const r = (await model.generateContent(prompt)).response;
   const ids = [...new Set(JSON.parse(r.text()).ids || [])];
