@@ -4,6 +4,7 @@
 // side panel. Offscreen documents can only use chrome.runtime, so tabs / scripting / permissions calls go
 // through the service worker (see background.js, "router").
 import { docLookup, clearDocsCache } from "./docs.js";
+import { obviousMode } from "./wording.js";
 import { setSimulation, onAvailabilityChange, cloudProblem, deviceUsable } from "./firebase-ext.js";
 import { pickElement, planRoute, hasKeywordHit, exactMatch, closeMatch, kindFits, alreadyHere, looksDone, specificToGoal, arrivedAt, namesNavTarget, navTarget, looksLikeExplain, pickTour, explainControl, chooseMode, readDocs, suggestDocs, answerAboutElement, isPlaceholder } from "./pipeline.js";
 
@@ -1141,10 +1142,12 @@ const pickNames = (items) => items.map((x) => `the ${x.desc.kind.toLowerCase()} 
 async function handlePick(question) {
   const items = pick.items;
   const tabId = pick.tabId;
-  let mode = "explain";
-  try {
-    mode = (await chooseMode({ question, title: items[0].desc.pageTitle })).mode;
-  } catch {}
+  let mode = obviousMode(question) || "explain";
+  if (!obviousMode(question)) {
+    try {
+      mode = (await chooseMode({ question, title: items[0].desc.pageTitle })).mode;
+    } catch {}
+  }
   if (mode === "guide") {
     // "Turn this on", "where else is this set": a guide that starts from the picked element(s).
     return ask(`${question} (they mean ${pickNames(items)} on this page)`, tabId);
@@ -1347,9 +1350,12 @@ async function handle(question, tabId) {
     await ensureFresh(tabId);
     await send(tabId, { type: "hide" });
     busy("Thinking…");
-    const title = (await send(tabId, { type: "outline" }))?.title || "";
-    let mode;
-    try {
+    // Clear wording ("what does X mean", "create a service account") decides without a model call.
+    let mode = obviousMode(question);
+    if (mode) {
+      log({ kind: "info", title: mode === "explain" ? "Decided: explain the page" : "Decided: guide you there", detail: "The wording makes it clear, so no AI call was needed." });
+    } else try {
+      const title = (await send(tabId, { type: "outline" }))?.title || "";
       const r = await chooseMode({ question, title });
       mode = r.mode;
       log({
