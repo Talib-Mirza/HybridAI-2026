@@ -615,7 +615,6 @@
       .grip{position:absolute;right:3px;bottom:3px;width:16px;height:16px;cursor:nwse-resize;color:var(--muted);opacity:.55;display:grid;place-items:center;border-radius:4px;touch-action:none}
       .grip:hover,.bar.moving .grip{opacity:1;color:var(--signal)}
       .grip svg{width:11px;height:11px}
-      .bar::before{content:"";position:absolute;left:18px;right:18px;top:0;height:2px;background:repeating-linear-gradient(90deg,var(--signal) 0 10px,transparent 10px 18px);border-radius:2px;opacity:.9}
       .bar-head{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:10px}
       .wordmark{font:800 22px/1 var(--display);letter-spacing:.2em;display:inline-flex;align-items:center;justify-self:center;color:var(--text);user-select:none;padding-left:.2em}
       .wordmark .o{width:.74em;height:.74em;position:relative;margin:0 .07em 0 .03em;display:inline-block}

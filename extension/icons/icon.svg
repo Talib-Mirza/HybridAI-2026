@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <!-- Waypoint: the wordmark's "O" (an amber waypoint ring) at the end of a dotted trail, on a night-signage tile.
+       Chrome wants 128px icons drawn in the middle 112px. -->
+  <rect x="8" y="8" width="112" height="112" rx="26" fill="#121916"/>
+  <rect x="9" y="9" width="110" height="110" rx="25" fill="none" stroke="#2b3833" stroke-width="2"/>
+  <g fill="#edf2ec">
+    <circle cx="32" cy="98" r="5.5" opacity=".38"/>
+    <circle cx="45" cy="93" r="5.5" opacity=".6"/>
+    <circle cx="55" cy="83" r="5.5" opacity=".85"/>
+  </g>
+  <circle cx="78" cy="52" r="21" fill="none" stroke="#ffb224" stroke-width="10"/>
+  <circle cx="78" cy="52" r="7.5" fill="#ffb224"/>
+</svg>
