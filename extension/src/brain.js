@@ -5,7 +5,7 @@
 // through the service worker (see background.js, "router").
 import { docLookup, clearDocsCache } from "./docs.js";
 import { setSimulation, onAvailabilityChange, cloudProblem, deviceUsable } from "./firebase-ext.js";
-import { pickElement, planRoute, hasKeywordHit, exactMatch, closeMatch, kindFits, alreadyHere, looksDone, specificToGoal, arrivedAt, namesNavTarget, navTarget, looksLikeExplain, pickTour, explainControl, chooseMode, readDocs, suggestDocs, answerAboutElement } from "./pipeline.js";
+import { pickElement, planRoute, hasKeywordHit, exactMatch, closeMatch, kindFits, alreadyHere, looksDone, specificToGoal, arrivedAt, namesNavTarget, navTarget, looksLikeExplain, pickTour, explainControl, chooseMode, readDocs, suggestDocs, answerAboutElement, isPlaceholder } from "./pipeline.js";
 
 // ---------- chrome.* through the service worker ----------
 const rpc = (method, ...args) =>
@@ -281,7 +281,8 @@ function placement(outline, id, opensMenu = false) {
     return { showId: item.expander, reveal: true, revealText: `${menuName(exp?.label)} to reveal "${item.label}".` };
   }
   // Nano sometimes flags an ordinary item as a menu; only a control that is actually collapsed counts.
-  if (opensMenu && item?.state.includes("collapsed")) return { showId: id, reveal: true, revealText: `${menuName(item?.label)}: what you need should be inside.` };
+  // (A guess: Nano thinks the goal is inside. Unlike an item known to be hidden in a menu, it needs checking.)
+  if (opensMenu && item?.state.includes("collapsed")) return { showId: id, reveal: true, guess: true, revealText: `${menuName(item?.label)}: what you need should be inside.` };
   // Row actions that only appear on hover: the ring sits on the row and jumps to the control on hover.
   const hoverHint = item?.hover ? (/\[[a-z ]+\]/i.test(item.hover) ? "Hover over its row to reveal it." : `Hover over "${item.hover}" to reveal it.`) : "";
   return { showId: id, reveal: false, revealText: "", hoverHint };
@@ -391,7 +392,13 @@ async function ask(question, tabId) {
     if (pick.completesGoal && !completes) {
       log({ kind: "info", title: "Not convinced", detail: `"${label}" doesn't name anything specific to the goal, so the cloud plans instead.` });
     }
-    if (res.found && (completes || res.where.reveal)) {
+    // Nano guessing that a menu holds the goal ("Create" for an access token) is only trusted when the menu
+    // names part of the goal; otherwise the cloud plans the route (it still sees Nano's pick).
+    const guessOk = res.where?.guess && hasKeywordHit(question, [picked || {}]);
+    if (res.where?.guess && !guessOk) {
+      log({ kind: "info", title: "Not convinced", detail: `Gemini Nano guessed the goal is inside "${label}", which doesn't name any part of it, so the cloud plans instead.` });
+    }
+    if (res.found && (completes || (res.where.reveal && (!res.where.guess || guessOk)))) {
       // The goal is on this page (possibly inside a collapsed menu): no route needed.
       state.mode = "single";
       const bubble = { step: "Here", text: res.where.reveal ? "" : `Use "${label}".`, src: SOURCE_LABEL[pick.source] };
@@ -461,6 +468,56 @@ async function escalate(goal, outline, gen, { pick = null, failed = null, unfini
   scheduleStep(0);
 }
 
+/**
+ * The page right after it changed (a navigation, a drawer opening) can be half-rendered: a sidebar still
+ * animating in showed 10 controls instead of 90 and Nano chose the menu button. On a new page, read the
+ * outline until it stops growing (up to ~1.2 s).
+ */
+let settledPath = "";
+async function settledOutline(tabId, stale) {
+  let o = await send(tabId, { type: "outline" });
+  if (!o || o.path === settledPath) return o;
+  // Consoles load in bursts: stop after two quiet reads in a row (or ~2.4 s).
+  for (let k = 0, quiet = 0; k < 6 && quiet < 2 && !stale(); k++) {
+    await new Promise((r) => setTimeout(r, 400));
+    const next = await send(tabId, { type: "outline" });
+    if (!next) break;
+    quiet = next.items.length > o.items.length ? 0 : quiet + 1;
+    o = next;
+  }
+  settledPath = o.path;
+  return o;
+}
+
+/** A step that means "choose one of your own items" rather than a label on screen. */
+function choosesItem(step, outline) {
+  const t = step?.target || "";
+  // A real label ("Your profile") of the kind the plan wants (not a "Job" item hidden in the New menu).
+  const real = (it) => it.state !== "hidden";
+  const shown = outline.items.filter(real);
+  if (exactMatch(t, shown, step?.kind) || closeMatch(t, shown, step?.kind)) return false;
+  if (isPlaceholder(t)) return true;
+  // The planner's convention for an item it can't name: kind "row", target = the kind of item ("service").
+  return step?.kind === "row" && /^[a-z][a-z ]{1,24}$/.test(t);
+}
+const itemNoun = (t) =>
+  (t || "item")
+    .replace(/^[<[{]|[>\]}]$/g, "")
+    .replace(/^(?:your|my|the|a|an|any|one)[-_ ]+/i, "")
+    .replace(/[-_ ](?:name|id)$/i, "")
+    .replace(/\b(?:you want.*|to (?:view|edit|use|open|schedule|manage).*)$/i, "")
+    .replace(/[-_]+/g, " ")
+    .trim() || "item";
+
+/** The guide stops at an empty list: the pill says so (the bar is usually closed mid-guide). */
+async function nothingToChoose(noun, text) {
+  state.mode = "idle";
+  renderSteps();
+  await send(state.tabId, { type: "hide" }).catch(() => {});
+  status(text);
+  chip("done", `No ${noun}s here yet`);
+}
+
 async function runStep(gen, attempt, run) {
   const stale = () => gen !== state.gen || run !== state.run || state.mode !== "route" || state.paused;
   if (stale()) return;
@@ -496,10 +553,51 @@ async function runStep(gen, attempt, run) {
   const of = () => "Next step";
   try {
     await ensureFresh(state.tabId);
-    const outline = await send(state.tabId, { type: "outline" });
+    const outline = await settledOutline(state.tabId, stale);
     if (stale()) return;
 
     if (await sweepDone(outline)) return;
+
+    // "Choose your service": point at the list, or say there's nothing in it yet. Never search for the
+    // planner's stand-in name.
+    const pickStep = state.steps[state.i];
+    if (pickStep && choosesItem(pickStep, outline)) {
+      const noun = itemNoun(pickStep.target);
+      if (pickStep.shownPath && pickStep.shownPath !== outline.path) {
+        // They chose one and its page opened: on to the next step.
+        state.i += 1;
+        scheduleStep(0);
+        return;
+      }
+      const heads = outline.items.filter((it) => it.role === "columnheader").map((it) => it.label);
+      const rows = outline.items.filter((it) => it.role === "row" && !/hidden/.test(it.state) && heads.filter((h) => it.label.includes(h)).length < 2);
+      const first = rows.find((r) => r.main) || rows[0];
+      if (first) {
+        const where = placement(outline, first.id);
+        if ((await send(state.tabId, { type: "check", id: where.showId }))?.ok && !stale()) {
+          log({ kind: "info", title: `Choose one of your ${noun}s`, detail: `The plan needs one of your own ${noun}s. The ring is on the first in the list; click whichever you mean. No AI call.` });
+          pickStep.shown = first.label;
+          pickStep.shownPath = outline.path;
+          renderSteps();
+          await show(where, { step: of(), text: `Choose the ${noun} you want.`, why: rows.length > 1 ? `Click its row or name. ${rows.length} are listed.` : "Click its row or name." });
+          status(`Choose the ${noun} you want.`);
+          return;
+        }
+      } else if (outline.empty) {
+        const said = outline.empty.startsWith("(") ? "its list is empty" : `the page says "${outline.empty}"`;
+        log({ kind: "info", title: "Nothing to choose here yet", detail: `The next step needs one of your ${noun}s, but ${said}. No AI call.` });
+        return nothingToChoose(noun, `There's no ${noun} here to choose yet (${said}). Create one first, then ask again.`);
+      }
+      if (attempt < 3) {
+        status("Waiting for the list to load…");
+        busy("Waiting for the list…");
+        stepTimer = setTimeout(() => runStep(gen, attempt + 1, run), 900);
+        return;
+      }
+      // Still no list: say so rather than search for a stand-in name.
+      log({ kind: "info", title: "Nothing to choose here", detail: `The next step needs one of your ${noun}s, and none is listed on this page. No AI call.` });
+      return nothingToChoose(noun, `I don't see any ${noun}s listed here. If you haven't created one yet, do that first, then ask again.`);
+    }
 
     // Steps for where the user already is (the current page's nav link, the selected tab) are done.
     while (state.i < state.steps.length - 1 && alreadyHere(state.steps[state.i].target, outline.items)) {
@@ -589,7 +687,7 @@ async function runStep(gen, attempt, run) {
     // and guessing (e.g. "some menu") does more harm than re-planning.
     let tried = false;
     let rejected = false; // Nano found something, but it was the wrong kind / already open / covered
-    for (const j of [state.i, state.i + 1]) {
+    for (let j of [state.i, state.i + 1]) {
       const step = state.steps[j];
       if (!step || !hasKeywordHit(step.target, outline.items)) continue;
       tried = true;
@@ -601,6 +699,12 @@ async function runStep(gen, attempt, run) {
       if (res.found && /expanded|covered/.test(pickedItem?.state || "")) {
         // A menu that's already open, or a control under something: not the next thing to click.
         log({ kind: "info", title: `Not "${pickedItem.label}"`, detail: /expanded/.test(pickedItem.state) ? "That menu is already open." : "Something is on top of it right now." });
+        rejected = true;
+        continue;
+      }
+      if (res.found && !res.where.reveal && !hasKeywordHit(step.target, [pickedItem]) && !/^(row|menu item)$/.test(step.kind || "")) {
+        // E.g. the menu button for "Service Accounts" while the sidebar was still animating in.
+        log({ kind: "info", title: `Not "${pickedItem.label}"`, detail: `It shares no words with "${step.target}".` });
         rejected = true;
         continue;
       }
@@ -617,6 +721,9 @@ async function runStep(gen, attempt, run) {
         return;
       }
       if (res.found) {
+        // Looking ahead found the CURRENT step's control (the page had loaded more by then): it's that step.
+        if (j > state.i && exactMatch(state.steps[state.i].target, [pickedItem])) j = state.i;
+        const step = state.steps[j];
         state.i = j;
         renderSteps();
         step.shown = pickedItem?.label;
@@ -667,10 +774,10 @@ async function hopOnDevice(goal, outline, gen, err, { pick = null } = {}) {
   const why = err?.reason || cloudProblem() || "it couldn't be reached";
   if (!nanoOn()) {
     log({ kind: "info", title: "No AI available to plan a route", detail: `Cloud Gemini is unavailable (${why}) and ${deviceUsable() ? "Gemini Nano isn't ready on this device" : "Gemini Nano is turned off by Simulate an outage"}.` });
-    chip(null);
     state.mode = "idle";
     renderSteps();
     status(`${friendly(err)} Waypoint can still point at a page you name exactly, like "Open Settings".`);
+    chip("done", "No AI available");
     return;
   }
   if (!state.local) log({ kind: "info", title: "Cloud unavailable: guiding on this device", detail: `Cloud Gemini is unavailable (${why}). Gemini Nano picks the next control on each page instead of planning the whole route; nothing leaves this device.` });
@@ -688,8 +795,8 @@ async function hopOnDevice(goal, outline, gen, err, { pick = null } = {}) {
   const repeat = item && kept.some((st) => st.shown === item.label && st.donePath === res.outline.path);
   if (!item || /current|selected|expanded/.test(item.state) || repeat) {
     log({ kind: "info", title: "No next step found on this device", detail: item ? `Gemini Nano pointed at "${item.label}" again, which doesn't move the guide forward.` : "Gemini Nano found no control on this page that leads toward the goal." });
-    chip(null);
     status(`Cloud Gemini is unavailable (${why}), and Gemini Nano can't see the next step on this page. Get closer by hand, or Re-plan once the cloud is back.`);
+    chip("done", "Stuck: cloud unavailable");
     setReplan(true);
     return;
   }

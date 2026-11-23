@@ -194,7 +194,8 @@
     if (el.getAttribute("aria-selected") === "true") s.push("selected");
     if (menu && el.getAttribute("aria-expanded") === "true") s.push("expanded");
     if (menu && el.getAttribute("aria-expanded") === "false") s.push("collapsed");
-    if (el.getAttribute("aria-current")) s.push("current");
+    const current = el.getAttribute("aria-current");
+    if (current && current !== "false") s.push("current"); // Databricks sets aria-current="false" on every link
     if (el.disabled || el.getAttribute("aria-disabled") === "true") s.push("disabled");
     return s.join(",");
   }
@@ -354,6 +355,17 @@
         main: inMain(el),
       });
     }
+    // Table column headers aren't controls, but they're what "what do these columns mean" is about. (Sort
+    // buttons and help icons inside them stay listed too; tours drop the duplicates by name.)
+    let cols = 0;
+    for (const th of deepQueryAll(document, COLHEAD)) {
+      if (cols >= 24 || seen.has(th) || th.closest("tbody") || th.matches(ROW) || !isVisible(th)) continue;
+      const name = redact(colName(th)).slice(0, 60);
+      if (name.length < 2 || /^(actions?|select( all)?)$/i.test(name)) continue;
+      cols++;
+      const r = th.getBoundingClientRect();
+      items.push({ id: idFor(th), role: "columnheader", label: name, context: redact(contextOf(th)) || "table column", state: "", offscreen: r.bottom < 0 || r.top > innerHeight, main: inMain(th) });
+    }
     markCurrentSection(items);
     const headings = deepQueryAll(document, "h1,h2,[role=heading]")
       .filter(isVisible)
@@ -366,7 +378,36 @@
       path: redact(location.pathname + location.hash),
       headings,
       items,
+      empty: emptyNote(),
     };
+  }
+
+  // "No jobs or pipelines found", "You don't have any services yet": the page saying a list is empty. A
+  // guide whose next step is "choose one of your X" can't go on there, and the planner should know.
+  const EMPTY =
+    /^(?:no\s.{0,60}?\s(?:found|yet|to (?:show|display)|available|exist|created|match(?:es|ing)?)\b|there (?:are|is) no\b|you (?:don't|do not|haven't) (?:have any|created any)\b|nothing (?:here|to (?:show|display))\b|no (?:results|items|rows|data|entries)\b|(?:this )?(?:list|table) is empty\b)/i;
+  function emptyNote() {
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
+    let k = 0;
+    for (let n = walker.nextNode(); n && k < 6000; n = walker.nextNode(), k++) {
+      const t = clean(n.nodeValue);
+      if (t.length < 6 || t.length > 120 || !EMPTY.test(t)) continue;
+      const el = n.parentElement;
+      if (!el || el.closest("#waypoint-host,[aria-hidden=true],script,style,nav,[role=navigation],[role=option],[role=listbox]") || !isVisible(el)) continue;
+      return redact(t);
+    }
+    // No such sentence (Cloud Run shows a "Create service" card instead): a table with column headers and
+    // no rows, once nothing is loading any more.
+    const loading = deepQueryAll(document, "[role=progressbar],mat-progress-bar,mat-spinner,[aria-busy=true]").some(isVisible);
+    if (loading) return "";
+    for (const t of deepQueryAll(document, "table,[role=table],[role=grid],[role=treegrid],mat-table")) {
+      if (!isVisible(t)) continue;
+      const heads = [...t.querySelectorAll(COLHEAD)].filter((h) => !h.closest("tbody") && isVisible(h));
+      if (heads.length < 2) continue;
+      const rows = [...t.querySelectorAll(ROW)].filter((r) => isVisible(r) && !r.querySelector(COLHEAD) && clean(r.textContent));
+      if (!rows.length) return "(the list is empty)";
+    }
+    return "";
   }
 
   // ---------- Docs links ----------
@@ -2050,7 +2091,9 @@
       case "describe":
         reply((msg.ids || []).map((id) => {
           const el = idToEl.get(id);
-          return el ? describeEl(el) : {};
+          if (!el) return {};
+          // A column header: its values, row by row, say more than any text around it.
+          return el.matches(COLHEAD) ? { ...describeEl(el), values: redact(colFields(el)).slice(0, 420) } : describeEl(el);
         }));
         break;
       case "update":

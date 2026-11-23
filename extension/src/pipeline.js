@@ -68,7 +68,7 @@ export function shortlist(question, items, k = 40) {
 /** True when some visible control's label shares a word with the target (used to wait for slow pages). */
 export function hasKeywordHit(target, items) {
   const stems = queryStems(target);
-  return items.some((it) => words(it.label).some((w) => stems.has(stem(w))));
+  return items.some((it) => it.role !== "columnheader" && words(it.label).some((w) => stems.has(stem(w))));
 }
 
 const norm = (s) => (s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
@@ -79,6 +79,8 @@ const norm = (s) => (s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
  * field must be something you can type in or toggle.
  */
 export function kindFits(kind, item) {
+  // Column headers are in the outline for explaining; they're never a step to click.
+  if (item?.role === "columnheader") return false;
   if (!kind || !item) return true;
   const nav = /navigation/.test(item.context || "");
   const field = /^(textbox|combobox|select|checkbox|switch|radio|searchbox|spinbutton)$/.test(item.role);
@@ -103,7 +105,7 @@ export function kindFits(kind, item) {
 export function exactMatch(target, items, kind = null) {
   const t = norm(target);
   if (!t) return null;
-  const hits = items.filter((it) => norm(it.label) === t && !/disabled|current|selected/.test(it.state) && kindFits(kind, it));
+  const hits = items.filter((it) => it.role !== "columnheader" && norm(it.label) === t && !/disabled|current|selected/.test(it.state) && kindFits(kind, it));
   // Same name twice: one the user can actually reach (not behind an open drawer or dialog) first; then
   // the page's own control over the app's navigation ("Settings" tab vs "Settings" menu).
   const reachable = hits.filter((it) => !/covered/.test(it.state));
@@ -180,8 +182,14 @@ export function specificToGoal(goal, label, outline) {
   const coreUse = words(core).filter((w) => !topic.has(stem(w))).length >= 2 ? core : goal;
   const goalStems = words(coreUse).map(stem).filter((st) => !topic.has(st));
   const labelStems = new Set(words(label).map(stem));
-  return goalStems.some((st) => labelStems.has(st));
+  // The thing the goal is about has to be named, not just its verb: "Create Gemini API key" shares only
+  // "create" with "create a service account".
+  const things = goalStems.filter((st) => !ACTION_STEMS.has(st));
+  return (things.length ? things : goalStems).some((st) => labelStems.has(st));
 }
+const ACTION_STEMS = new Set(
+  "create add new make delete remove edit update change enable disable turn open view show see find manage set setup configure generate rotate start stop run schedule go check list my your".split(" ").map((w) => stem(w))
+);
 
 /** "Open X" / "go to X" / "show me X" → "X" (else null). */
 export function navTarget(goal) {
@@ -202,7 +210,22 @@ export const line = (it) =>
   [it.id, it.role, `"${it.label}"`, it.context, it.state].filter(Boolean).join(" | ");
 
 const pageHeader = (outline) =>
-  `Page title: ${outline.title}\nPage path: ${outline.path}\nPage headings: ${outline.headings.join(" / ") || "(none)"}`;
+  `Page title: ${outline.title}\nPage path: ${outline.path}\nPage headings: ${outline.headings.join(" / ") || "(none)"}${outline.empty ? `\nThe page says: "${outline.empty}"` : ""}`;
+
+/**
+ * A planned target that isn't a real label: the planner standing in for one of the user's own items
+ * ("your-service-name", "<job>", "[service]", "your service", "the job you want to schedule").
+ */
+export function isPlaceholder(target) {
+  const t = (target || "").trim();
+  return (
+    /^[<[{].*[>\]}]$/.test(t) ||
+    /^(?:your|my)[-_ ]/i.test(t) ||
+    /\b(?:you want|of your choice|to (?:view|edit|use|open|schedule|manage))\b/i.test(t) ||
+    /^(?:the|a|an|any|one)\s+\w+(?:\s\w+)?$/i.test(t) ||
+    /[-_](?:name|id)$/i.test(t)
+  );
+}
 
 /**
  * Compact candidate lines for Nano: a context fragment shared by most candidates (e.g. every control is
@@ -225,7 +248,8 @@ function compactLines(cands) {
  */
 export async function pickElement({ question, outline, forceCloud = false }) {
   // Doc links are never the control to use, unless the user is asking for docs.
-  const usable = /\bdocs?\b|documentation|learn more/i.test(question) ? outline.items : outline.items.filter((it) => !DOC_LINK.test(it.label));
+  const clickable = outline.items.filter((it) => it.role !== "columnheader");
+  const usable = /\bdocs?\b|documentation|learn more/i.test(question) ? clickable : clickable.filter((it) => !DOC_LINK.test(it.label));
   const cands = shortlist(question, usable, 30);
   if (!cands.length) return { elementId: "none", source: "none", candidates: 0, total: 0 };
 
@@ -347,6 +371,8 @@ Rules:
 - If this is the landing page of a product that isn't set up yet (a "Get started", "Set up" or "Enable" button, and none of the product's own tabs or settings), setting it up is the first step: target that button, and say in the instruction that it turns the product on. The product's own tabs and settings only appear after that.
 - Navigate with the app's own navigation, tabs and buttons. Don't route through a search box unless no listed control or collapsed group could lead there.
 - If a step means opening a project, use the project's name exactly as shown on its card as the target.
+- Never make up the name of one of the user's own items (a service, job, key, file). When a step is choosing one of them and its name isn't listed above, use kind "row", target = the kind of item in singular (e.g. "service"), and say "Choose the service you want" in the instruction.
+- If the page says a list is empty ("No jobs found"), the user has none yet: don't plan steps that pick one from it.
 - Never invent values or secrets. Stop before any final irreversible confirmation and tell the user to review it themselves.`;
 
   // Deliberately ungrounded: re-planning from the live page corrects stale knowledge on any site, with
@@ -428,7 +454,7 @@ const aboutWholePage = (q) => /\b(this|the|current)\s+(page|screen|view)\b|\bher
 
 // Collective words → which outline items belong to the group. Columns are the help icons in a header row.
 const FIELD_ROLES = /^(switch|checkbox|textbox|combobox|radio|spinbutton|slider|searchbox|listbox)$/;
-const isColumn = (it) => !!it.anchorLabel && /\brow "/.test(it.context || "");
+const isColumn = (it) => it.role === "columnheader" || (!!it.anchorLabel && /\brow "/.test(it.context || ""));
 const GROUPS = [
   { name: "rows", re: /\brows\b|\bentries\b|\beach (?:row|entry|item)\b|\bthe items\b/i, test: (it) => it.role === "row" },
   { name: "columns", re: /\bcolumns\b|\bcolumn headers?\b/i, test: isColumn },
@@ -473,15 +499,18 @@ export async function pickTour({ question, outline, max = 20 }) {
   // the answer, no model needed. Lists ("Verified and Unverified…") go to the model, which reads them better.
   if (!/\band\b|,|&/i.test(question)) {
     const q = ` ${question.toLowerCase().replace(/[^a-z0-9]+/g, " ")} `;
-    const named = visible.filter(({ it }) => it.anchorLabel && q.includes(` ${it.label.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()} `));
-    if (named.length === 1) return { items: [named[0].it], source: "none", ms: 0, sent: "", byName: true };
+    const named = visible.filter(({ it }) => (it.anchorLabel || it.role === "columnheader") && q.includes(` ${it.label.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()} `));
+    const names = new Set(named.map(({ it }) => norm(it.label)));
+    if (names.size === 1) return { items: [named[0].it], source: "none", ms: 0, sent: "", byName: true };
   }
   // A question about a group ("what do the rows in this table mean", "explain these tabs") is about every
   // member of it: take them straight from the page, in order, no model needed.
   const group = groupOf(question);
   if (group) {
     const inMain = visible.filter(({ it }) => it.main || !/navigation/.test(it.context));
-    const members = inMain.filter(({ it }) => group.test(it)).map((x) => x.it);
+    // One stop per name: a column can be both its header and the help icon inside it (the icon goes first).
+    const byName = new Set();
+    const members = inMain.filter(({ it }) => group.test(it) && !byName.has(norm(it.label)) && byName.add(norm(it.label))).map((x) => x.it);
     if (members.length >= 2) return { items: members.slice(0, max), source: "none", ms: 0, sent: "", byGroup: group.name };
   }
   // Keyword matches first, then page content over navigation chrome; keep the top 40 in page order.
@@ -581,10 +610,10 @@ ${pageHeader(outline)}
 
 The user asked: "${question}"
 
-${item.anchorLabel ? "Explain this term shown on the page (a column, status or setting; the user reached it through its help icon). Say what it means and what its values tell the user, not what the icon does" : "Explain this control"}:
+${item.anchorLabel ? "Explain this term shown on the page (a column, status or setting; the user reached it through its help icon). Say what it means and what its values tell the user, not what the icon does" : item.role === "columnheader" ? "Explain this table column: what it shows and what its values tell the user (not how to sort it)" : "Explain this control"}:
 - label: "${item.label}"
-- type: ${item.anchorLabel ? "term" : item.role}${item.state ? `\n- state: ${item.state}` : ""}${item.context ? `\n- context: ${item.context}` : ""}`;
-  const local = `${base}${detail.hint ? `\n- tooltip / description: ${detail.hint}` : ""}${detail.nearby ? `\n- text next to it on the page: "${detail.nearby}"` : ""}`;
+- type: ${item.anchorLabel ? "term" : item.role === "columnheader" ? "table column" : item.role}${item.state ? `\n- state: ${item.state}` : ""}${item.context ? `\n- context: ${item.context}` : ""}`;
+  const local = `${base}${detail.values ? `\n- values in this column, row by row: ${detail.values}` : ""}${detail.hint ? `\n- tooltip / description: ${detail.hint}` : ""}${detail.nearby && !detail.values ? `\n- text next to it on the page: "${detail.nearby}"` : ""}`;
   // Public docs text: fine for either model.
   const docsBlock = docs
     ? `\n\nFrom the app's official documentation (use it for what the control does and why it matters; use the page only for its current state):\n"""\n${docs}\n"""`
